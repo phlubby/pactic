@@ -1,6 +1,12 @@
+#
 # TIC80 packer
+#
 #  Uses the zlib code chunk to crunch down your source
 #  https://github.com/nesbox/TIC-80/wiki/tic-File-Format
+#
+# Usage: tic80packer [lua file]
+#
+
 import sys
 import zlib
 
