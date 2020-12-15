@@ -13,7 +13,7 @@ import zlib
 with open(sys.argv[1], mode='rb') as file:
   uncomp = file.read()
 print("Uncompressed length: {} bytes".format(len(uncomp)))
-comp = zlib.compress(uncomp)
+comp = zlib.compress(uncomp, zlib.Z_BEST_COMPRESSION)
 print("Compressed length:   {} bytes".format(len(comp)))
 print("With header:         {} bytes".format(len(comp)+4))
 with open(sys.argv[1]+".tic", 'wb') as file:
