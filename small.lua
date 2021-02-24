@@ -1,0 +1,1 @@
+function TIC() cls() pix(10,10,3) end
