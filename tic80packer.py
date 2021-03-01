@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 # based on this one, from Gargaj
 
 # https://gist.github.com/Gargaj/5bf66c128c6c6c47f4c78de630e56569
@@ -34,7 +36,7 @@ MAC_NEWLINE = b'\r'
 class Compression(Enum):
     N = 0  # No
     Y = 1  # Yes
-    A = 2  # Automatic: choses the smallest size
+    A = 2  # Automatic: chooses the smallest size
 
     @classmethod
     def has_key(cls, key):
@@ -77,7 +79,7 @@ elif len(sys.argv) > 1:
     filename = sys.argv[1]
 else:  # well, what else is there to do?
     if filename is None:
-        print("Usage: (python3) ticzip.py <filename> <Compression:NO/YES/AUTO> <ChunkDefault:NO/YES/TRUNCATED>")
+        print("Usage: (python3) tic80packer.py <filename> <Compression:NO/YES/AUTO> <ChunkDefault:NO/YES/TRUNCATED>")
         print("If no filename is given it runs in interactive mode")
         filename = input("filename: ")
 
@@ -123,7 +125,7 @@ with open(filename, mode='rb') as file:
             compress_obj = zlib.compressobj(i1, zlib.DEFLATED, 15, zlib.DEF_MEM_LEVEL, i2)
             new_compressed_data = compress_obj.compress(uncomp)
             new_compressed_data += compress_obj.flush()
-            new_compressed_size = len(new_compressed_data)
+            # new_compressed_size = len(new_compressed_data)
             # we dont want/need the checksum, so lets remove the last 4 bytes
             new_compressed_data = new_compressed_data[:-4]
             new_compressed_size = len(new_compressed_data)
