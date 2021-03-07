@@ -778,7 +778,8 @@ def pack(data, args):
     source = data
 
     def compress_info(pack_info, extra_bytes_info=None):
-        original_length = pack_info.original_length
+        original_source_length = len(source)
+        mod_source_length = pack_info.original_length
 
         new_length = pack_info.best_length
         name = pack_info.name
@@ -786,14 +787,15 @@ def pack(data, args):
             # Desc already contains size info
             size_info = ''
         else:
-            size_info = " ({})".format(byte_length(original_length))
+            size_info = " ({})".format(byte_length(mod_source_length))
 
         s = "{}{}:".format(name, size_info)
         s += " " * max(1, 21 - len(s))
         s += byte_length(new_length)
 
-        if new_length != original_length:
-            ratio = 100.0 * (original_length - new_length) / original_length
+        if new_length != original_source_length:
+            ratio = 100.0 * (original_source_length
+                             - new_length) / original_source_length
             s += " ({:2.2f}%)".format(ratio)
 
         s += " " + pack_info.best_info
