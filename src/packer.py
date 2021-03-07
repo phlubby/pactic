@@ -830,10 +830,11 @@ def pack(data, args):
         log_error("hehe")
         exit()
 
-    if not args.single_pass:
+    if not args.shown_break_msg and not args.single_pass:
         print()
         print("Intermediate best results are saved. Use Ctrl-C to stop.")
         print()
+        args.shown_break_msg = True
 
     add_stage("Original", source, packer)
 

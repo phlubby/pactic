@@ -58,6 +58,7 @@ if not args.luafile:
     print(s, file=sys.stderr)
     exit()
 
+args.shown_break_msg = False
 for filename in args.luafile:
     with open(filename, mode='rb') as file:
         args.filename_in = filename
