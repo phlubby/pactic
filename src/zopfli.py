@@ -1,16 +1,15 @@
-from ctypes import byref, CDLL, c_char, c_int, c_size_t, \
-    c_void_p, pointer, Structure
+import ctypes
 import os
 import platform
 
 
-class ZopfliOptions(Structure):
-    _fields_ = [("verbose", c_int),
-                ("verbose_more", c_int),
-                ("num_iterations", c_int),
-                ("blocksplitting", c_int),
-                ("unused_blocksplittinglast", c_int),
-                ("blocksplittingmax", c_int)]
+class ZopfliOptions(ctypes.Structure):
+    _fields_ = [("verbose", ctypes.c_int),
+                ("verbose_more", ctypes.c_int),
+                ("num_iterations", ctypes.c_int),
+                ("blocksplitting", ctypes.c_int),
+                ("unused_blocksplittinglast", ctypes.c_int),
+                ("blocksplittingmax", ctypes.c_int)]
 
 
 compressor = None
@@ -28,13 +27,13 @@ def zopfli_compress(bytes_in, use_extreme=False):
         if system == 'Darwin':
             append = '.dylib'
         elif system == 'Windows':
-            # append = ('32' if sizeof(c_void_p) == 4 else '64') + '.dll'
+            # append = str(ctypes.sizeof(ctypes.c_void_p) * 8) + '.dll'
             append = '.dll'
 
         path = os.path.join(os.path.dirname(__file__),
                             '..', 'lib', 'libzopfli' + append)
         try:
-            compressor = CDLL(path)
+            compressor = ctypes.CDLL(path)
         except OSError:
             print("WARNING: Not using Zopfli"
                   " (shared library not found at {}).".format(path))
@@ -43,7 +42,7 @@ def zopfli_compress(bytes_in, use_extreme=False):
 
     options = ZopfliOptions()
     compressor.ZopfliInitOptions.restype = None
-    compressor.ZopfliInitOptions(byref(options))
+    compressor.ZopfliInitOptions(ctypes.byref(options))
 
     # options.verbose = 1
     # options.verbose_more = 1
@@ -61,17 +60,17 @@ def zopfli_compress(bytes_in, use_extreme=False):
 
     num_in = len(bytes_in)
 
-    bytes_out = c_void_p(None)
-    num_out = c_size_t(0)
+    bytes_out = ctypes.c_void_p(None)
+    num_out = ctypes.c_size_t(0)
 
     compressor.ZopfliZlibCompress.restype = None
     compressor.ZopfliZlibCompress(
-        byref(options),
-        bytes_in, c_size_t(num_in),
-        pointer(bytes_out), pointer(num_out))
+        ctypes.byref(options),
+        bytes_in, ctypes.c_size_t(num_in),
+        ctypes.pointer(bytes_out), ctypes.pointer(num_out))
 
     if not num_out:
-        assert False, "zopfli compression failed?!"
+        # assert False, "zopfli compression failed?!"
         return None
 
-    return bytes((c_char * num_out.value).from_address(bytes_out.value))
+    return bytes((ctypes.c_char * num_out.value).from_address(bytes_out.value))
