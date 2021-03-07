@@ -49,15 +49,15 @@ def zopfli_compress(bytes_in, use_extreme=False):
     # options.verbose_more = 1
 
     if use_extreme:
-        options.num_iterations = 20
+        options.num_iterations = 400
         options.blocksplitting = 1
         options.blocksplittingmax = 0
     else:
         # Faster compression settings that should result in same compression
         # ratio as extreme settings. If not these need to be tweaked!
-        options.num_iterations = 10
+        options.num_iterations = 14
         options.blocksplitting = 1
-        options.blocksplittingmax = 2
+        options.blocksplittingmax = 3
 
     num_in = len(bytes_in)
 
