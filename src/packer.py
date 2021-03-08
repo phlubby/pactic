@@ -135,8 +135,7 @@ class CompressorZopfli(Compressor):
         return zopfli_compress(data), ""
 
 
-# [TODO] whitespace, concatenation
-def strip_lua_source(data):
+def strip_lua_comments(data):
     s = ''
     lines = data.decode('utf-8').splitlines()
 
@@ -244,6 +243,7 @@ def strip_lua_source(data):
         line = line.strip()
         if line:
             s += line + ' '
+            # s += line + '\n'
 
     # [TODO] Don't blindly replace these.
     # Replace all whitespace and EOLs with space (0x20) to consistently use
@@ -252,8 +252,8 @@ def strip_lua_source(data):
         s = s.replace(find, ' ')
     # print("'" + s + "'")
 
-    # [TODO] Remove self added ending space properly.
-    s = s.strip()
+    # Remove self added ending space at end of lines.
+    s = s[:-1]
 
     return s.encode('utf-8')
 
@@ -351,17 +351,6 @@ class Packer(src.lualexer.LuaLexer):
 
             final_replacement = new_id[:]
             assert ' ' not in final_replacement, final_replacement
-            # if new_id[0] in string.hexdigits:
-            #     # if not self.token_concat_safe_offsets[offset]:
-            #     print(j)
-            #     if (not self.token_concat_safe_offsets[
-            #        self.all_ids[old_id]['offsets'][j]]):
-            #         # if not offsets:
-            #         #     offsets = {}
-            #         #     for k in self.new_id_offsets:
-            #         #         offsets[k] = self.new_id_offsets[k][:]
-            #         final_replacement = ' ' + final_replacement
-            #         return None, None
 
             t += final_replacement
             prev_offset = offset + len(old_id)
@@ -388,27 +377,27 @@ class Packer(src.lualexer.LuaLexer):
             return t, self.new_id_offsets
 
     def strip(self, source):
-        # [TODO] moar stripping
-        source = strip_lua_source(source)
-        masked = self.analyze(source)
+        source = strip_lua_comments(source)
+        self.analyze(source)
 
         s = source.decode('utf-8')
+        masked = self.mask_source(s)
 
-        begin_offset = 1
-        t = s[:begin_offset]
+        t = ''
 
-        def is_unsafe(c):
-            return c.isalpha() or c.isdigit()
-
-        for i, c in enumerate(masked[begin_offset:-1]):
-            i += begin_offset
-            if c != ' ' or (is_unsafe(t[-1:]) and is_unsafe(s[i+1])):
+        for i, c in enumerate(masked):
+            if c != ' ':
+                assert i not in self.ws_required, i
                 t += s[i]
                 continue
 
-        t += s[-1:]
-        t = t.strip()  # For whitespace at end
+            assert i in self.ws_required, i
 
+            required = self.ws_required[i]
+            if required:
+                t += ' '
+
+        t = t.strip()
         return t.encode('utf-8')
 
     def minify(self, source):
@@ -506,8 +495,8 @@ class Packer(src.lualexer.LuaLexer):
             return pool
 
         # [TICKLE]
-        DEF_CHAR_DEPTH = 7
-        DEF_ID_DEPTH = 7
+        DEF_CHAR_DEPTH = 6
+        DEF_ID_DEPTH = 6
 
         self.chars_depth = min(DEF_CHAR_DEPTH, len(self.char_freq))
         self.id_depth = min(DEF_ID_DEPTH, len(self.known_ids))
@@ -516,9 +505,11 @@ class Packer(src.lualexer.LuaLexer):
 
         id_rename_count = len(known_ids_freq) - 0
 
-        ids = [k for k in self.ids_concat_safe if not self.ids_concat_safe[k]]
+        ids = [k for k in self.ids_concat_info if not self.is_concat_safe(k)]
         num_separated_identifiers_required = len(ids)
-        if num_separated_identifiers_required:
+
+        # [TICKLE]
+        if num_separated_identifiers_required < 10:
             self.chars_depth += 1
             self.id_depth += 1
 
@@ -569,22 +560,19 @@ class Packer(src.lualexer.LuaLexer):
                 else:
                     v = known_ids_freq[i]
 
-            def can_coalesce(c):
-                return c not in string.hexdigits
-
             del_index = 0
             if must_replace_var:
 
                 j = 0
-                concat_safe = self.ids_concat_safe[known_ids_freq[i]]
 
-                if not concat_safe:
-                    while (j < len(full_id_pool)
-                           and not can_coalesce(full_id_pool[j])):
-                        j += 1
-                    if j != len(full_id_pool):
-                        v = full_id_pool[j]
-                        del_index = j
+                while (j < len(full_id_pool)
+                       and not self.is_concat_compatible_replacement(
+                        known_ids_freq[i], full_id_pool[j])):
+                    j += 1
+                # assert j != len(full_id_pool)
+                if j != len(full_id_pool):
+                    v = full_id_pool[j]
+                    del_index = j
 
             del full_id_pool[del_index]
 
@@ -592,9 +580,6 @@ class Packer(src.lualexer.LuaLexer):
             i += 1
 
         s = source[:]
-
-        # for i, var in enumerate(known_ids_freq):
-        #     print(var, new_id_pool[i], self.ids_concat_safe[var])
 
         for i, var in enumerate(known_ids_freq):
             s, self.new_id_offsets = self.replace(s, var, new_id_pool[i])
@@ -611,9 +596,6 @@ class Packer(src.lualexer.LuaLexer):
         def list_s(list):
             return "".join(k + sep for k in list)[:-len(sep)]
 
-        desc = (sep.join(k for k in self.ids_concat_safe
-                if self.ids_concat_safe[k]))
-        log_deeper("Concatable identifiers: " + desc)
         log_deeper("Original identifiers used in permutations:  "
                    + list_s(self.known_ids_freq[:self.chars_depth]))
         log_deeper("Replaced identifiers used for permutations: "
@@ -671,19 +653,18 @@ class Packer(src.lualexer.LuaLexer):
 
             skip = False
 
-            # concat_safe = False
             for i, new_id in enumerate(perm):
                 old_id = self.new_id_pool[i]
                 origin_id_name = id_replacements[i][0]
 
                 assert new_id not in vars_used
 
-                if new_id[0] in string.hexdigits:
-                    if not self.all_ids[known_ids_freq[i]]['concat_safe']:
-                        # [TODO] Don't bother trying with space preprended?
-                        # new_id = ' ' + new_id
-                        skip = True
-                        break
+                if not self.is_concat_compatible_replacement(
+                     known_ids_freq[i], new_id):
+                    # [TODO] Don't bother trying with space preprended?
+                    # new_id = ' ' + new_id
+                    skip = True
+                    break
 
             if skip:
                 # log_deepest("Skipping: " + desc)
@@ -703,7 +684,8 @@ class Packer(src.lualexer.LuaLexer):
                 vars_used.append(new_id)
 
                 assert (new_id[0] not in string.hexdigits
-                        or self.all_ids[known_ids_freq[i]]['concat_safe'])
+                        or self.all_ids[known_ids_freq[i]]['concat_info']
+                        not in 'dx')
 
                 s, self.new_id_offsets = self.replace(
                     s, old_id, new_id, i)
@@ -758,6 +740,21 @@ class Packer(src.lualexer.LuaLexer):
         print(end='')
 
         return self.best.data_out
+
+    def is_concat_compatible_replacement(self, ori_id, new_id):
+        concat_info = self.ids_concat_info[ori_id]
+        first_new_id_char = new_id[0]
+
+        if 'x' in concat_info:
+            return not self.can_hex_concat(first_new_id_char)
+        elif 'd' in concat_info:
+            return not self.can_dec_concat(first_new_id_char)
+
+        concat_info = concat_info.replace(
+            'd', '').replace('x', '').strip()
+        assert not concat_info, ori_id + ":" + concat_info
+
+        return True
 
 
 def pack(args):

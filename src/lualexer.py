@@ -7,6 +7,21 @@ class LuaLexer(object):
         self.all_ids = {}
         self.log_level = log_level
 
+    valid_dec_chars = string.hexdigits + '.'
+    valid_hex_chars = valid_dec_chars + 'Pp'
+
+    @staticmethod
+    def can_dec_concat(c):
+        return c in LuaLexer.valid_dec_chars
+
+    @staticmethod
+    def can_hex_concat(c):
+        return c in LuaLexer.valid_hex_chars
+
+    def is_concat_safe(self, id):
+        info = self.ids_concat_info[id]
+        return not ('d' in info or 'x' in info)
+
     @staticmethod
     def is_valid_identifier_start_char(c):
         return c.isalpha() or c == '_'
@@ -16,17 +31,7 @@ class LuaLexer(object):
         return LuaLexer.is_valid_identifier_start_char(c) or c.isdigit()
 
     @staticmethod
-    def is_valid_function_identifier_char(c):
-        return LuaLexer.is_valid_identifier_char(c) or c == '.'
-
-    def is_concat_safe_id(self, id):
-        return self.all_ids[id]['concat_safe']
-
-    def analyze(self, source):
-        # source = self.source
-        s = source.decode('utf-8')
-        s += ' '
-
+    def mask_source(s):
         immutable_pos = '|'
         quoted_pos = '"'
         # First (try to) mask quoted string.
@@ -48,15 +53,131 @@ class LuaLexer(object):
                     t += s[i] if quoted_str_is_code else quoted_pos
                     i += 1
 
-                end = i + 1
-
                 t += quoted_pos  # '|' if quoted_str_is_code else s[i]
 
                 i += 1
                 continue
             t += s[i]
             i += 1
-        s = t
+
+        return t
+
+    def check_whitespace(self, s):
+        masked = LuaLexer.mask_source(s)
+
+        s = ' ' + s
+        masked = ' ' + masked
+
+        begin_offset = 1
+        t = s[:begin_offset]
+
+        seen = ' '  # (a)lphabet, (d)ecimal, he(x)a. ' ' for all else.
+        num_exp_seen = length = 0
+
+        # k=offset, v=space_required? (as-is)
+        self.ws_required = {}
+        self.seen = s[0]  # space
+
+        for i, c in enumerate(masked[begin_offset:-1]):
+            i += begin_offset
+
+            prev = t[-1:]
+            prev_seen = seen
+            reset = False
+            if c != ' ':
+                c = s[i]
+                t += c
+                if c in 'xX':
+                    if prev == '0':
+                        seen = 'x'
+                    else:
+                        reset = True
+                elif c.isdigit():
+                    if seen == ' ':
+                        seen = 'd'
+                elif c in 'eE':
+                    if seen == 'd':
+                        num_exp_seen += 1
+                        if num_exp_seen == 2:
+                            reset = True
+                    elif seen != 'x':
+                        reset = True
+                elif c in string.hexdigits:
+                    if seen != 'x':
+                        reset = True
+                elif c in 'pP':
+                    if seen == 'x':
+                        num_exp_seen += 1
+                        if num_exp_seen == 2:
+                            reset = True
+                    else:
+                        reset = True
+                elif c is '.':
+                    if seen not in 'dx':
+                        reset = True
+                elif c.isalpha() or c in '_':
+                    reset = True
+                else:
+                    reset = True
+
+                if not reset and prev_seen != seen:
+                    length = 0
+
+                length += 1
+            else:
+                def next_non_space():
+                    j = i+1
+                    while j < len(s):
+                        c = s[j]
+                        if c != ' ':
+                            return c
+                        j += 1
+
+                    # assert False
+                    return ' '
+
+                next = next_non_space()
+
+                required = False
+                if seen == 'a':
+                    if self.is_valid_identifier_char(next):
+                        required = True
+                elif seen == 'd':
+                    if self.can_dec_concat(next):
+                        required = True
+                    elif next in 'xX':
+                        if prev == '0' and length == 1:
+                            required = True
+                elif seen == 'x':
+                    if self.can_hex_concat(next):
+                        required = True
+
+                index = i - begin_offset
+                assert index not in self.ws_required
+
+                assert seen in ' adx'
+                self.ws_required[i-begin_offset] = required
+
+                if required:
+                    reset = True
+                    t += ' '
+
+            if reset:
+                if self.is_valid_identifier_start_char(c):
+                    seen = 'a'
+                else:
+                    seen = ' '
+                length = num_exp_seen = 0
+
+            self.seen += seen
+
+        t += s[i+begin_offset]
+
+    def analyze(self, source):
+        s = source.decode('utf-8')
+        self.check_whitespace(s)
+        s = self.mask_source(s)
+        s += ' '
 
         def extract_id(s):
             for i, c in enumerate(s):
@@ -78,7 +199,7 @@ class LuaLexer(object):
                 all_ids[id] = {}
                 all_ids[id]['writes'] = 0
                 all_ids[id]['offsets'] = []
-                all_ids[id]['concat_safe'] = True
+                all_ids[id]['concat_info'] = ' '
 
             if prop:
                 if prop not in all_ids[id]:
@@ -122,7 +243,6 @@ class LuaLexer(object):
             return s[begin:]
 
         all_ids = {}
-        self.token_concat_safe_offsets = {}
         for m in re.finditer('[A-Za-z_][A-Za-z0-9_]*', s):
             name = m.group()
 
@@ -160,7 +280,6 @@ class LuaLexer(object):
 
             set_id_(name)
 
-            concat_safe = True
             if start > 0:
                 left_ofs = start-1
                 prev_c = s[left_ofs]
@@ -170,21 +289,13 @@ class LuaLexer(object):
                     if parent:
                         all_ids[name]['parent'] = parent
 
-                concat_safe = not prev_c.isnumeric()
-                if not concat_safe:
-                    all_ids[name]['concat_safe'] = False
+                seen = self.seen[start]
+                assert seen != 'a'
 
-            self.token_concat_safe_offsets[start] = concat_safe
+                if seen not in all_ids[name]['concat_info']:
+                    all_ids[name]['concat_info'] += seen
 
             all_ids[name]['offsets'].append(start)
-
-        def fetch_left(ofs):
-            while ofs > 0:
-                if s[ofs] != ' ':
-                    return s[ofs]
-                ofs = ofs - 1
-            # assert False
-            return ' '
 
         def fetch_right_offset(ofs):
             while ofs < len(s):
@@ -433,7 +544,7 @@ class LuaLexer(object):
         for k in known_ids:
             self.new_id_offsets[k] = all_ids[k]['offsets'][:]
 
-        self.ids_concat_safe = {k: all_ids[k]['concat_safe']
+        self.ids_concat_info = {k: all_ids[k]['concat_info']
                                 for k in known_ids_freq}
 
         self.known_ids = known_ids
