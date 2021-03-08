@@ -12,29 +12,30 @@
 from __future__ import print_function
 
 import argparse
+import os
 import sys
 
+from src.common import log_error
 from src.packer import pack, packer_names
 
 prog = sys.argv[0]
 PROG_VER = "0.3b"
 parser = argparse.ArgumentParser(prog=prog)
 
-parser.add_argument('luafile', nargs='*',
-                    help="Lua file to compress and use for TIC file")
+parser.add_argument('inputfile', nargs='*',
+                    help="Lua or TIC input file to compress")
 
 parser.add_argument('-o', dest='ticfile', default=None,
-                    help="Optional TIC output filename (default is "
-                         "based on source file)")
+                    help="TIC output filename or directory")
 
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help="Increase verbosity level")
 
-parser.add_argument('--single-pass', '-s', action='store_true',
-                    help="Don't perform variations stage")
-
 parser.add_argument('--default-chunk', '-d', action='store_true',
                     help="Write default chunk for sweety16 palette usage")
+
+parser.add_argument('--single-pass', '-s', action='store_true',
+                    help="Don't perform variations stage")
 
 parser.add_argument('--pedantic', action='store_true',
                     help="Write fully compliant files")
@@ -50,18 +51,45 @@ for s in packer_names():
 
 args = parser.parse_args()
 
-if not args.luafile:
+if not args.inputfile:
 
-    s = "usage: {} file.lua\n".format(sys.argv[0])
-    s += "Creates file.tic by compressing file.lua\n"
-    s += "Use -h for more help".format(prog)
+    s = "usage:\n".format(prog)
+    ex = [("file.lua", "Create file.tic from file.lua")]
+    ex += [("cart.tic -o packed.tic", "Create packed.tic from cart.tic")]
+    ex += [("*.lua -o packed/", "Process multiple files and store in packed/")]
+    for e in ex:
+        s += "{} {}{}# {}\n".format(prog, e[0], ' ' * (25 - len(e[0])), e[1])
+
+    s += "\nUse -h for more help".format(prog)
     print(s, file=sys.stderr)
     exit()
 
-args.shown_break_msg = False
-for filename in args.luafile:
-    with open(filename, mode='rb') as file:
-        args.filename_in = filename
-        source = file.read()
+if not args.ticfile:
+    single = len(args.inputfile) == 1
+    for filename in args.inputfile:
+        if '.tic' == os.path.splitext(filename)[1].lower():
+            s = ("Input file '{}' is a TIC file and would be overwritten.\n\n"
+                 "Use -o to specify explicit output ")
+            if single:
+                s += "TIC file or "
+            s += "directory."
+            log_error(s.format(filename))
+            exit()
 
-        pack(source, args)
+args.shown_break_msg = False
+for file_in in args.inputfile:
+    path_out = args.ticfile
+
+    default_out = os.path.splitext(file_in)[0] + '.tic'
+    if not path_out:
+        path_out = default_out
+    elif os.path.isdir(path_out):
+        path_out = os.path.join(path_out, os.path.basename(default_out))
+    elif not os.path.splitext(path_out)[1]:
+        log_error("No such directory: '{}'".format(path_out))
+        exit()
+
+    args.filename_in = file_in
+    args.filename_out = path_out
+
+    pack(args)

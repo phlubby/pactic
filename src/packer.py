@@ -266,8 +266,9 @@ def packer_names():
 
 
 class Packer(src.lualexer.LuaLexer):
-    def __init__(self, args):
+    def __init__(self, args, tic):
         self.args = args
+        self.tic = tic
         self.log_level = args.verbose
         self.ran_minify = False
         super(Packer, self).__init__(self.log_level)
@@ -282,21 +283,12 @@ class Packer(src.lualexer.LuaLexer):
                 self.packers.append(packer())
 
     def write_tic(self, verbose=0):
-        ticfile = self.args.ticfile
-        if not ticfile:
-            ticfile = os.path.splitext(self.args.filename_in)[0] + ".tic"
-
-        tic = Tic(with_default_chunk=self.args.default_chunk,
-                  with_full_default_chunk=self.args.pedantic)
-
         # if self.best:
         #     assert self.best_source == self.best.decompressed_source()
-
-        tic.write(ticfile,
-                  self.best_source,
-                  self.best.data_out,
-                  verbose)
-        return ticfile
+        self.tic.write(self.args.filename_out,
+                       self.best_source,
+                       self.best.data_out,
+                       verbose)
 
     def data_in(self):
         return self.data
@@ -768,14 +760,26 @@ class Packer(src.lualexer.LuaLexer):
         return self.best.data_out
 
 
-def pack(data, args):
+def pack(args):
+    try:
+        print("Packing {} => {}".format(os.path.basename(args.filename_in),
+              os.path.basename(args.filename_out)))
+        file = open(args.filename_in, mode='rb')
+    except FileNotFoundError:
+        log_error("No such file: '{}'".format(args.filename_in))
+        return None
+
+    data = file.read()
+    file.close()
+
     global pedantic
     log_level = args.verbose
     pedantic = args.pedantic
 
     set_log_info(log_level, pedantic)
 
-    source = data
+    tic = Tic(args, data)
+    source = tic.source()
 
     def compress_info(pack_info, extra_bytes_info=None):
         original_source_length = len(source)
@@ -826,11 +830,11 @@ def pack(data, args):
         if log_level <= log_threshold:
             compress_info(stage)
 
-    packer = Packer(args)
+    packer = Packer(args, tic)
 
     if not len(packer.packers):
         log_error("hehe")
-        exit()
+        exit(1)
 
     if not args.shown_break_msg and not args.single_pass:
         print()

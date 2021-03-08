@@ -36,6 +36,5 @@ def log_deepest(s):
     return log(s, min_log_level=4)
 
 
-def log_error(s):
-    log("Error: " + s, sys.stderr)
-    exit(1)
+def log_error(s, min_log_level=0):
+    log("Error: " + s, sys.stderr, min_log_level)
