@@ -1,3 +1,4 @@
+import struct
 import zlib
 
 from src.common import log_deep, log_error, byte_length
@@ -27,8 +28,8 @@ class Chunk:
                 Chunk.HEADER_LENGTH, len(chunk)))
             return
 
-        self.chunk_id = chunk[0]
-        data_length = chunk[1] + (chunk[2] << 8)
+        self.chunk_id = struct.unpack('B', chunk[:1])[0]
+        data_length = struct.unpack('<H', chunk[1:3])[0]
         max_remaining_length = len(chunk) - Chunk.HEADER_LENGTH
         if data_length > max_remaining_length:
             log_error("Expected chunk data length {}, got {}.".format(
