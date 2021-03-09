@@ -348,17 +348,17 @@ class LuaLexer(object):
             set_id_prop(k, 'reserved')
             set_id_prop(k, 'keyword')
 
-        funcs = ('btn,btnp,circ,cirb,cls,exit,font,load,line,'
-                 'map,memcpy,music,peek,peek4,'
-                 'pix,pmem,poke,poke4,print,rect,rectb,'
-                 'spr,textri,TIC,time,tri'.split(','))
+        funcs = ('btn,btnp,circ,cirb,clip,cls,exit,fget,font,fset,'
+                 'key,keyp,line,load,'
+                 'map,memcpy,mget,mouse,mset,music,OVR,peek,peek4,'
+                 'pix,pmem,poke,poke4,print,rect,rectb,reset,'
+                 'SCN,sfx,spr,sync,'
+                 'textri,TIC,time,trace,tri,tstamp'.split(','))
 
         tic_classes = 'math,string,table'.split(',')
         for k in all_ids:
             if k in funcs or k in tic_classes:
                 all_ids[k]['reserved'] = True
-
-        reserved = ['OVR', 'SCN', 'TIC']
 
         for m in re.finditer(r'function ([A-Za-z_.: 0-9]+)\(', s):
             name = m.group(1)
@@ -386,10 +386,6 @@ class LuaLexer(object):
 
             if parent:
                 set_id_prop(func, 'member')
-
-            if func in reserved:
-                assert func != 's'
-                set_id_prop(func, 'reserved')
 
             paren_count = 1
             # TODO
