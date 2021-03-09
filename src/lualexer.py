@@ -502,7 +502,6 @@ class LuaLexer(object):
         for k in known_ids:
             num_refs = len(all_ids[k]['offsets'])
             # [TICKLE]
-            # ids_weight[k] = num_refs + num_refs * (len(k) - 1)
             ids_weight[k] = num_refs * (len(k))
 
         known_ids_freq = sorted(ids_weight,
