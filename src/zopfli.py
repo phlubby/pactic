@@ -29,14 +29,34 @@ def zopfli_compress(bytes_in, use_extreme=False):
         elif system == 'Windows':
             # append = str(ctypes.sizeof(ctypes.c_void_p) * 8) + '.dll'
             append = '.dll'
+        search_paths = []
 
-        path = os.path.join(os.path.dirname(__file__),
-                            '..', 'lib', 'libzopfli' + append)
-        try:
-            compressor = ctypes.CDLL(path)
-        except OSError:
+        if append != '.dll':
+            search_paths += ['/usr/lib/']
+
+        search_paths += [os.path.join(os.path.dirname(__file__), '..', 'lib/')]
+
+        lib_name = 'libzopfli' + append
+
+        found = False
+        for path in search_paths:
+            try:
+                path = os.path.join(path, lib_name)
+                compressor = ctypes.CDLL(path)
+                found = True
+                break
+            except OSError:
+                pass
+
+        if not found:
             print("WARNING: Not using Zopfli"
-                  " (shared library not found at {}).".format(path))
+                  " (shared library {} not found at {}).\n".format(
+                    lib_name, str(search_paths)[1:-1]))
+            if append == '.so':
+                s = "Consider using e.g. your favourite package manager to"
+                s += " install libzopfli. Because it's worth it.\n"
+                print(s)
+
             compressor = 0
             return None
 
