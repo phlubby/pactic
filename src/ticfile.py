@@ -154,10 +154,10 @@ class Tic:
             final_length = min(final_length, len(compressed_data))
         self.verbose = verbose
 
-        max_code_size = 64 * 1024 + 1023
+        max_code_size = 64 * 1024
         if final_length >= max_code_size:
             if verbose:
-                length_unit = "KiB" if byte_length(0).count('byte') else 'KB'
+                length_unit = "KiB" if self.args.pedantic else 'KB'
                 log_error("Code chunk {} exceeds {} {}"
                           .format(final_length,
                                   int((max_code_size + 1023) / 1024),
