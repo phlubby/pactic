@@ -586,11 +586,10 @@ class Packer(src.lualexer.LuaLexer):
 
         self.new_id_pool = new_id_pool
 
-        self.ran_minify = True
-
         return s.encode('utf-8')
 
     def variate(self, source):
+        self.ran_minify = True
         sep = ", "
 
         def list_s(list):
