@@ -462,46 +462,25 @@ class LuaLexer(object):
                 called_funcs[name] = []
             called_funcs[name].append(m.start(1))
 
-        for func in called_funcs:
-            assert func in all_ids, func
-            assert 'function' in all_ids[func], func + ":" + str(all_ids[func])
-
-        # print("Unknown classes:")
-        # for k in all_ids:
-        #     if 'class' in all_ids[k]:
-        #         if 'declared' not in all_ids[k]:
-        #             print(k)
-        # print("Unknown funcs:")
         unknown_funcs = []
         for k in all_ids:
             if 'function' in all_ids[k]:
-                # print(k)
                 if 'declared' not in all_ids[k]:
-                    # print(k)
                     unknown_funcs.append(k)
-        # print(unknown_funcs)
-        # print("---------------------------------------")
-        # print("Declared funcs:")
+
         declared_funcs = []
         for k in all_ids:
             if 'function' in all_ids[k]:
-                # print(k)
                 if 'declared' in all_ids[k]:
                     declared_funcs.append(k)
-        # print(declared_funcs)
-        # print("---------------------------------------")
 
-        # print("Declared tokens:")
         declared_ids = []
         for k in all_ids:
             if 'reserved' in all_ids[k]:
                 continue
             if 'declared' in all_ids[k]:
                 declared_ids.append(k)
-        # print(declared_tokens)
-        # print("---------------------------------------")
 
-        # print("Unknown vars:")
         unknown_vars = []
         for k in all_ids:
             if 'reserved' in all_ids[k]:
@@ -514,11 +493,8 @@ class LuaLexer(object):
             if 'class' in all_ids[k]:
                 continue
                 # assert 'declared' in all_ids[k]
-            # print(k, all_ids[k])
             unknown_vars.append(k)
         known_ids = declared_ids
-        # print(unknown_vars)
-        # print("---------------------------------------")
 
         known_ids += unknown_vars
 

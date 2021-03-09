@@ -219,7 +219,7 @@ def strip_lua_comments(data):
                 continue
 
             new_line += ori_line[begin:idx]
-            # print(m)
+
             in_multi_comment = True
             num_equals = m.end(0) - m.start(0) - len(lua_begin_multi_comment)
             multi_comment_end = ']{}]'.format('=' * num_equals)
@@ -250,7 +250,6 @@ def strip_lua_comments(data):
     # the same whitespace char (and variate with that).
     for find in ['\r\n', '\t', '\r', '\n']:
         s = s.replace(find, ' ')
-    # print("'" + s + "'")
 
     # Remove self added ending space at end of lines.
     s = s[:-1]
@@ -848,8 +847,6 @@ def pack(args):
     add_stage("Minified", minified, packer)
 
     if not args.single_pass:
-        # [TODO] either work on original or minified source, need to
-        # mention original identifier names.
         variated = packer.variate(minified)
         add_stage("Variated", minified, packer, variated)
 
@@ -860,8 +857,7 @@ def pack(args):
     size_header = 4
     size_desc = "+{}".format(size_header)
 
-    write_default_chunk = args.default_chunk
-    if write_default_chunk:
+    if args.default_chunk:
         size_default_chunk = 4 - (not args.pedantic) * 3
         size_desc += "+{}".format(size_default_chunk)
     else:
