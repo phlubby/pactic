@@ -18,7 +18,7 @@ import sys
 from src.common import log_error
 from src.packer import pack, packer_names
 
-prog = sys.argv[0]
+prog = 'pactic'
 PROG_VER = "0.3b"
 parser = argparse.ArgumentParser(prog=prog)
 
