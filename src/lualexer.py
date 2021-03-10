@@ -80,6 +80,19 @@ class LuaLexer(object):
 
         return t
 
+    @staticmethod
+    def unescaped_quote_presence(s):
+        quotes = LuaLexer.quotes()
+        for q in quotes:
+            s = s.replace('\\' + q, '@@')
+
+        present = ''
+        for q in quotes:
+            if s.count(q):
+                present += q
+
+        return present
+
     def check_whitespace(self, s):
         masked = LuaLexer.mask_source(s)
 

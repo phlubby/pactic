@@ -292,6 +292,34 @@ class Packer(src.lualexer.LuaLexer):
     def data_in(self):
         return self.data
 
+    def compare(self, s1, s2):
+        # list of [compressed-length, string]
+        packed = []
+        sources = [s1, s2]
+        best_index = 0
+
+        for s in sources:
+            for pack in self.packers:
+                data_out, info = pack.do_compress(s)
+                length = len(data_out)
+                packed.append([length, s])
+                if length < packed[best_index][0]:
+                    best_index = len(packed) - 1
+
+        num_packers = len(self.packers)
+
+        # [TODO] This can fail (zlib < Zopfli)
+        # if num_packers > 1:
+        #     if not (best_index & 1):
+        #         assert packed[best_index+1][1] == packed[best_index][1]
+
+        other_best_index = (best_index + num_packers) % len(packed)
+
+        if packed[other_best_index][0] == packed[best_index][0]:
+            return packed[best_index], None
+
+        return packed[best_index], packed[other_best_index]
+
     def compress(self, data=None, perm_info=''):
         if data:
             self.data = data
@@ -399,10 +427,71 @@ class Packer(src.lualexer.LuaLexer):
         t = t.strip()
         return t.encode('utf-8')
 
-    def minify(self, source):
+    def xform_funcs(self, source):
         self.analyze(source)
-        source = source.decode('utf-8')
+        s = source.decode('utf-8')
+        m = self.mask_source(s)
 
+        func_ofs = [k for k in self.func_offsets
+                    if 'inner' not in self.func_offsets[k]]
+        t = ''
+        i = 0
+        num_xformed = 0
+        for offset in func_ofs:
+            t += s[i:offset]
+            f = self.func_offsets[offset]
+
+            i = offset
+
+            if 'body-start' not in f or 'body-end' not in f:
+                assert not f['name'], f
+                continue
+
+            if f['argc']:
+                continue
+
+            start = f['body-start']
+            end = f['body-end']
+
+            if end - start <= 0:
+                continue
+
+            quote_char = "'"
+            quotes = self.unescaped_quote_presence(m[start:end])
+            if len(quotes) > 1:
+                continue
+            elif len(quotes) == 1:
+                quote_char = self.opp_quote(quotes[0])
+
+            t += (f['full-name'] + '=load'
+                  + quote_char + s[start:end] + quote_char)
+
+            i = end + len("end")
+            num_xformed += 1
+
+        t += s[i:]
+
+        return num_xformed, self.strip(t.encode('utf-8'))
+
+    def minify(self, source):
+        num_xformed, source_xformed = self.xform_funcs(source)
+        if num_xformed:
+            # [TODO] Compare minified versions instead?
+            best, next = self.compare(source, source_xformed)
+            if not next:
+                log_deep("Same (un)transformed lengths ({}), using original"
+                         .format(byte_length(best[0])))
+            elif best[1] == source_xformed:
+                source = best[1]
+                log_deep("Using {} transformation(s) ({} < {})".format(
+                    num_xformed,
+                    byte_length(best[0]),
+                    byte_length(next[0]),
+                ))
+
+        self.analyze(source)
+
+        source = source.decode('utf-8')
         all_ids = self.all_ids
         known_ids = self.known_ids
         known_ids_freq = self.known_ids_freq
