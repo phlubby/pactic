@@ -31,15 +31,24 @@ class LuaLexer(object):
         return LuaLexer.is_valid_identifier_start_char(c) or c.isdigit()
 
     @staticmethod
+    def quotes():
+        return '"' + "'"
+
+    @staticmethod
+    def opp_quote(c):
+        quotes = LuaLexer.quotes()
+        return quotes[quotes.find(c)-1]
+
+    @staticmethod
     def mask_source(s):
         immutable_pos = '|'
-        quoted_pos = '"'
-        # First (try to) mask quoted string.
-        # [TODO] single-quoted strings (everywhere).
         i = 0
         t = ''
+        quotes = LuaLexer.quotes()
         while i < len(s):
-            if s[i] == '"':
+            if s[i] in quotes:
+                main_quote = quoted_pos = s[i]
+                other_quote = LuaLexer.opp_quote(main_quote)
                 match = 'load'
                 quoted_str_is_code = (i >= len(match)
                                       and s[i-len(match):].startswith(match))
@@ -49,11 +58,20 @@ class LuaLexer(object):
                 t += quoted_pos  # '|' if quoted_str_is_code else s[i]
                 i += 1
 
-                while s[i] != '"' or s[i-1] == '\\':
-                    t += s[i] if quoted_str_is_code else quoted_pos
+                in_other_quote = False
+                while s[i] != main_quote or s[i-1] == '\\':
+                    if s[i] == other_quote and s[i-1] != '\\':
+                        in_other_quote = not in_other_quote
+                        quoted_pos = (other_quote if in_other_quote
+                                      else main_quote)
+
+                    if quoted_str_is_code:
+                        t += quoted_pos if in_other_quote else s[i]
+                    else:
+                        t += quoted_pos
                     i += 1
 
-                t += quoted_pos  # '|' if quoted_str_is_code else s[i]
+                t += quoted_pos
 
                 i += 1
                 continue
