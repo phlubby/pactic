@@ -77,6 +77,7 @@ class LuaLexer(object):
         # k=offset, v=space_required? (as-is)
         self.ws_required = {}
         self.seen = s[0]  # space
+        i = 0
 
         for i, c in enumerate(masked[begin_offset:-1]):
             i += begin_offset
@@ -171,6 +172,9 @@ class LuaLexer(object):
 
             self.seen += seen
 
+        # Repeat last purpose for bounds checking convenience.
+        self.seen += seen
+
         t += s[i+begin_offset]
 
     def analyze(self, source):
@@ -248,34 +252,18 @@ class LuaLexer(object):
 
             start = m.start()
 
-            # False positive for a hex number?
-            do_value_check = False
-            if name[0] in ['x', 'X']:
-                if (start and s[start-1] == '0'):
-                    if start > 1 and s[start-2] in string.hexdigits:
-                        pass
-                    else:
-                        do_value_check = True
-            elif name[0] in ['e', 'E']:
-                if start and (s[start-1].isdigit()) or s[start-1] == '.':
-                    do_value_check = True
-
-            if do_value_check:
+            if name[0] in 'EXex':
+                # Check for a concatenated ID from the right.
                 end = m.end()
-                i = start + 1
-                while i < end:
-                    # hex values not allowed with decimal scientific notation,
-                    # but since that's an error check for them instead of just
-                    # digits (which doesn't work for hex notation).
-                    if s[i] not in string.hexdigits:
-                        break
-                    i = i + 1
+                i = end
+                while i >= start and self.seen[i] == 'a':
+                    i -= 1
 
-                assert i != start
                 if i == end:
-                    # print("Discarding:", name)
                     continue
+
                 start = i
+
                 name = s[start:end]
 
             set_id_(name)
@@ -289,11 +277,11 @@ class LuaLexer(object):
                     if parent:
                         all_ids[name]['parent'] = parent
 
-                seen = self.seen[start]
-                assert seen != 'a'
+            seen = self.seen[start]
+            assert seen != 'a', s[start]
 
-                if seen not in all_ids[name]['concat_info']:
-                    all_ids[name]['concat_info'] += seen
+            if seen not in all_ids[name]['concat_info']:
+                all_ids[name]['concat_info'] += seen
 
             all_ids[name]['offsets'].append(start)
 
@@ -446,7 +434,7 @@ class LuaLexer(object):
 
         for m in re.finditer('[A-Za-z_]+', t):
             for c in m.group():
-                assert c in string.hexdigits or c in ['X', 'x'], c
+                assert c in self.valid_hex_chars or c in 'Xx', c
 
         # methods = 'abs,atan,cos,insert,min,max,' \
         #     'randomseed,random,remove,sin,tan'
