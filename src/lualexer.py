@@ -224,29 +224,8 @@ class LuaLexer(object):
                 set_id_(id, prop)
             return id
 
-        def extract_id_reverse(s):
-            begin = len(s)
-            while start > 0:
-                begin -= 1
-                if not LuaLexer.is_valid_identifier_char(s[begin]):
-                    break
-            else:
-                return None
-
-            begin += 1
-
-            if begin == len(s):
-                return None
-
-            if not LuaLexer.is_valid_identifier_start_char(s[begin]):
-                begin += 1
-
-            if begin == len(s):
-                return None
-
-            return s[begin:]
-
         all_ids = {}
+        prev_name = ''
         for m in re.finditer('[A-Za-z_][A-Za-z0-9_]*', s):
             name = m.group()
 
@@ -273,9 +252,8 @@ class LuaLexer(object):
                 prev_c = s[left_ofs]
                 if prev_c == '.':
                     set_id_prop(name, 'member')
-                    parent = extract_id_reverse(s[:left_ofs])
-                    if parent:
-                        all_ids[name]['parent'] = parent
+                    if start and 'a' in self.seen[start - 1]:
+                        all_ids[name]['parent'] = prev_name
 
             seen = self.seen[start]
             assert seen != 'a', s[start]
@@ -284,6 +262,8 @@ class LuaLexer(object):
                 all_ids[name]['concat_info'] += seen
 
             all_ids[name]['offsets'].append(start)
+
+            prev_name = name
 
         def fetch_right_offset(ofs):
             while ofs < len(s):
