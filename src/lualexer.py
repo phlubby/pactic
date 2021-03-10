@@ -242,8 +242,31 @@ class LuaLexer(object):
                 set_id_(id, prop)
             return id
 
+        def fetch_right_offset(ofs):
+            while ofs < len(s):
+                c = s[ofs]
+                if c != ' ':
+                    next_c = s[ofs+1] if ofs + 1 < len(s) else ' '
+                    if c == '.' and next_c == '.':
+                        # String concatenation, not an instance.
+                        c = ' '
+                    if c == '=' and next_c == '=':
+                        # Comparing, not writing
+                        c = ' '
+                    return c, ofs
+                ofs = ofs + 1
+
+            # assert False
+            return ' ', ofs
+
+        def fetch_right(ofs):
+            return fetch_right_offset(ofs)[0]
+
         all_ids = {}
         prev_name = ''
+        # K=offset V= body-start, body-end, num-ends-needed, full-name, name
+        self.func_offsets = func_offsets = {}
+        func_stack = []
         for m in re.finditer('[A-Za-z_][A-Za-z0-9_]*', s):
             name = m.group()
 
@@ -273,6 +296,33 @@ class LuaLexer(object):
                     if start and 'a' in self.seen[start - 1]:
                         all_ids[name]['parent'] = prev_name
 
+            if len(func_stack):
+                f = func_offsets[func_stack[-1]]
+
+                if name in ['for', 'if', 'while']:
+                    f['num-ends-needed'] += 1
+                elif name == 'end':
+                    f['num-ends-needed'] -= 1
+                    if not f['num-ends-needed']:
+                        f['body-end'] = start
+
+                        del func_stack[-1]
+
+            if name == 'function':
+                f = func_offsets[start] = {}
+                f['num-ends-needed'] = 1
+
+                c = fetch_right(m.end())
+                if self.is_valid_identifier_start_char(c):
+                    f['name'] = ''
+                else:
+                    f['name'] = None
+
+                func_stack += [start]
+
+                if len(func_stack) > 1:
+                    func_offsets[func_stack[-1]]['inner'] = True
+
             seen = self.seen[start]
             assert seen != 'a', s[start]
 
@@ -283,25 +333,8 @@ class LuaLexer(object):
 
             prev_name = name
 
-        def fetch_right_offset(ofs):
-            while ofs < len(s):
-                c = s[ofs]
-                if c != ' ':
-                    next_c = s[ofs+1] if ofs + 1 < len(s) else ' '
-                    if c == '.' and next_c == '.':
-                        # String concatenation, not an instance.
-                        c = ' '
-                    if c == '=' and next_c == '=':
-                        # Comparing, not writing
-                        c = ' '
-                    return c, ofs
-                ofs = ofs + 1
-
-            # assert False
-            return ' ', ofs
-
-        def fetch_right(ofs):
-            return fetch_right_offset(ofs)[0]
+        # Not all functions ended? (could be a problem with the source)
+        # assert not func_stack
 
         for k in all_ids:
             for ofs in all_ids[k]['offsets']:
@@ -346,7 +379,8 @@ class LuaLexer(object):
             if k in funcs or k in tic_classes:
                 all_ids[k]['reserved'] = True
 
-        for m in re.finditer(r'function ([A-Za-z_.: 0-9]+)\(', s):
+        func_match = 'function '
+        for m in re.finditer(func_match + r'([A-Za-z_.: 0-9]+)\(', s):
             name = m.group(1)
 
             parent = None
@@ -368,6 +402,12 @@ class LuaLexer(object):
             if not func:
                 continue
 
+            start = m.start()
+            assert start in func_offsets
+            func_offsets[start]['name'] = func
+            full_name = s[start+len(func_match):m.end() - 1]
+            func_offsets[start]['full-name'] = full_name
+
             set_id_prop(func, 'declared')
 
             if parent:
@@ -376,28 +416,36 @@ class LuaLexer(object):
             paren_count = 1
             # TODO
             ofs = m.end()
+            argc = 0
             while True:
                 c, ofs = fetch_right_offset(ofs)
+                ofs += 1
                 if c == '(':
                     paren_count += 1
                 elif c == ')':
                     paren_count -= 1
                     if not paren_count:
+                        func_offsets[start]['body-start'] = ofs
+                        f = func_offsets[start]
                         break
                     else:
-                        ofs += 1
                         continue
                 elif c == ',':
-                    ofs += 1
+                    argc += 1
+                    continue
+                elif c in ' .':
                     continue
                 elif not LuaLexer.is_valid_identifier_start_char(c):
+                    assert False, func
                     break
 
+                ofs -= 1
                 name = extract_id(s[ofs:])
                 set_id_prop(name, 'local')
                 set_id_prop(name, 'declared')
 
                 ofs += len(name)
+            func_offsets[start]['argc'] = argc
 
         for k in all_ids:
             try:
