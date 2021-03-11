@@ -583,8 +583,11 @@ class Packer(src.lualexer.LuaLexer):
             return pool
 
         # [TICKLE]
-        DEF_CHAR_DEPTH = 6
-        DEF_ID_DEPTH = 6
+        DEF_CHAR_DEPTH = self.args.depth
+        DEF_ID_DEPTH = DEF_CHAR_DEPTH
+
+        DEF_CHAR_DEPTH = max(1, DEF_CHAR_DEPTH)
+        DEF_ID_DEPTH = max(1, DEF_ID_DEPTH)
 
         self.chars_depth = min(DEF_CHAR_DEPTH, len(self.char_freq))
         self.id_depth = min(DEF_ID_DEPTH, len(self.known_ids))

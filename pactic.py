@@ -31,11 +31,15 @@ parser.add_argument('-o', dest='ticfile', default=None,
 parser.add_argument('--verbose', '-v', action='count', default=0,
                     help="Increase verbosity level")
 
-parser.add_argument('--default-chunk', '-d', action='store_true',
+parser.add_argument('--default-chunk', '-c', action='store_true',
                     help="Write default chunk for sweety16 palette usage")
 
 parser.add_argument('--single-pass', '-s', action='store_true',
                     help="Don't perform variations stage")
+
+default_depth = 6
+parser.add_argument('--depth', '-d', type=int, default=default_depth,
+                    help="Change initial search depth of "+str(default_depth))
 
 parser.add_argument('--pedantic', action='store_true',
                     help="Write fully compliant files")
