@@ -69,14 +69,8 @@ class Tic:
         self.chunks = {}
         self.sources = {}
 
-        # [TODO]
-        is_lua = True
-        for c in data:
-            if c > 127:
-                is_lua = False
-                break
-
-        if is_lua:
+        try:
+            data.decode('utf-8')
             self.valid = True
             chunk_id = Chunk.CODE_UNCOMPRESSED
             code_chunk = Chunk().create(chunk_id, data)
@@ -84,6 +78,8 @@ class Tic:
             self.sources[chunk_id] = code_chunk.data
             self.first_code_chunk_id = chunk_id
             return
+        except UnicodeDecodeError:
+            pass
 
         length = len(data)
 
