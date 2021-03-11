@@ -606,9 +606,9 @@ class Packer(src.lualexer.LuaLexer):
         # [TICKLE]
         prefill = []
         for id in self.known_ids_freq:
-            if len(id) > 1 and not num_separated_identifiers_required:
+            if len(id) > 1:
                 break
-            prefill += id
+            prefill += id[0]
             break
 
         diff = self.chars_depth - len(self.known_ids) - 3
