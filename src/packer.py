@@ -279,7 +279,10 @@ class Packer(src.lualexer.LuaLexer):
             packer_name = str(packer())
             arg_name = 'no_' + packer_name.lower()
             if not args.__dict__[arg_name]:
-                self.packers.append(packer())
+                pack = packer()
+                data, info = pack.do_compress(bytes())
+                if data:
+                    self.packers.append(pack)
 
     def write_tic(self, verbose=0):
         # if self.best:
