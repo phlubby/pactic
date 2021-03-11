@@ -483,11 +483,11 @@ class Packer(src.lualexer.LuaLexer):
                 # [TODO] Compare minified versions instead?
                 best, next = self.compare(source, source_xformed)
                 if not next:
-                    log_deep("Same (un)transformed lengths ({}), using original"
-                             .format(byte_length(best[0])))
+                    log("Same (un)transformed lengths ({}), using original"
+                        .format(byte_length(best[0])))
                 elif best[1] == source_xformed:
                     source = best[1]
-                    log_deep("Using {} transformation(s) ({} < {})".format(
+                    log("Using {} transformation(s) ({} < {})".format(
                         num_xformed,
                         byte_length(best[0]),
                         byte_length(next[0]),
