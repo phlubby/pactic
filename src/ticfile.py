@@ -57,7 +57,7 @@ class Chunk:
 
     types = {CODE_UNCOMPRESSED: 'Uncompressed code',
              CODE_COMPRESSED: 'Compressed code',
-             DEFAULT_CHUNK: 'CHUNK_DEFAULT (Sweety16 palette)', }
+             DEFAULT_CHUNK: 'CHUNK_DEFAULT (Sweetie 16 palette)', }
 
 
 class Tic:

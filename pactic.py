@@ -32,7 +32,7 @@ parser.add_argument('--verbose', '-v', action='count', default=0,
                     help="Increase verbosity level")
 
 parser.add_argument('--default-chunk', '-c', action='store_true',
-                    help="Write default chunk for sweety16 palette usage")
+                    help="Write default chunk for Sweetie 16 palette usage")
 
 parser.add_argument('--single-pass', '-s', action='store_true',
                     help="Don't perform variations stage")
