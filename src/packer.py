@@ -474,20 +474,21 @@ class Packer(src.lualexer.LuaLexer):
         return num_xformed, self.strip(t.encode('utf-8'))
 
     def minify(self, source):
-        num_xformed, source_xformed = self.xform_funcs(source)
-        if num_xformed:
-            # [TODO] Compare minified versions instead?
-            best, next = self.compare(source, source_xformed)
-            if not next:
-                log_deep("Same (un)transformed lengths ({}), using original"
-                         .format(byte_length(best[0])))
-            elif best[1] == source_xformed:
-                source = best[1]
-                log_deep("Using {} transformation(s) ({} < {})".format(
-                    num_xformed,
-                    byte_length(best[0]),
-                    byte_length(next[0]),
-                ))
+        if not self.args.no_transform:
+            num_xformed, source_xformed = self.xform_funcs(source)
+            if num_xformed:
+                # [TODO] Compare minified versions instead?
+                best, next = self.compare(source, source_xformed)
+                if not next:
+                    log_deep("Same (un)transformed lengths ({}), using original"
+                             .format(byte_length(best[0])))
+                elif best[1] == source_xformed:
+                    source = best[1]
+                    log_deep("Using {} transformation(s) ({} < {})".format(
+                        num_xformed,
+                        byte_length(best[0]),
+                        byte_length(next[0]),
+                    ))
 
         self.analyze(source)
 

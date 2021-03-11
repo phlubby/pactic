@@ -41,6 +41,9 @@ default_depth = 6
 parser.add_argument('--depth', '-d', type=int, default=default_depth,
                     help="Change initial search depth of "+str(default_depth))
 
+parser.add_argument('--no-transform', '-t', action='store_true',
+                    help="Don't attempt to transform functions")
+
 parser.add_argument('--pedantic', action='store_true',
                     help="Write fully compliant files")
 
