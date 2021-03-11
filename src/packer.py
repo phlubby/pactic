@@ -10,7 +10,7 @@ import re
 import string
 import zlib
 
-from src.common import log_deep, log_deeper, log_deepest, \
+from src.common import log, log_deep, log_deeper, log_deepest, \
     log_error, set_log_info, byte_length
 from src.ticfile import Tic
 from src.zopfli import zopfli_compress
@@ -915,15 +915,12 @@ def pack(args):
 
     stages = []
 
-    log_threshold = 2
-
     def add_stage(name, source, packer, data=None):
         if not data:
             data = packer.compress(source)
         stage = PackStage(name, source, data)
         stages.append(stage)
-        if log_level <= log_threshold:
-            compress_info(stage)
+        compress_info(stage)
 
     packer = Packer(args, tic)
 
@@ -970,10 +967,6 @@ def pack(args):
     full_data += bytes(4 + size_default_chunk)
 
     add_stage(info, source, packer, full_data)
-
-    if log_level > log_threshold:
-        for stage in stages:
-            compress_info(stage)
 
     # if args.single_pass:
     #     packer.write_tic()
