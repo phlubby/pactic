@@ -608,6 +608,10 @@ class Packer(src.lualexer.LuaLexer):
         for id in self.known_ids_freq:
             if len(id) > 1:
                 break
+
+            if id[0] not in string.hexdigits:
+                continue
+
             prefill += id[0]
             break
 
