@@ -48,7 +48,7 @@ def zopfli_compress(bytes_in, use_extreme=False):
                 pass
 
         if not found:
-            print("WARNING: Not using Zopfli"
+            print("\nWARNING: Not using Zopfli"
                   " (shared library {} not found at {}).\n".format(
                     lib_name, str(search_paths)[1:-1]))
             if append == '.so':
