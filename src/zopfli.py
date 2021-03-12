@@ -33,7 +33,7 @@ def zopfli_compress(bytes_in, use_extreme=False):
         if append != '.dll':
             search_paths += ['/usr/lib/']
 
-        search_paths += [os.path.join(os.path.dirname(__file__), '..', 'lib/')]
+        search_paths += [os.path.join(os.path.dirname(__file__), '..', 'lib')]
 
         lib_name = 'libzopfli' + append
 
