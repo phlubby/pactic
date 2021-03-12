@@ -27,8 +27,7 @@ def zopfli_compress(bytes_in, use_extreme=False):
         if system == 'Darwin':
             append = '.dylib'
         elif system == 'Windows':
-            # append = str(ctypes.sizeof(ctypes.c_void_p) * 8) + '.dll'
-            append = '.dll'
+            append = str(ctypes.sizeof(ctypes.c_void_p) * 8) + '.dll'
         search_paths = []
 
         if append != '.dll':
