@@ -19,7 +19,7 @@ from src.common import log_error
 from src.packer import pack, packer_names
 
 prog = 'pactic'
-PROG_VER = "0.3b"
+PROG_VER = "0.4b"
 parser = argparse.ArgumentParser(prog=prog)
 
 parser.add_argument('inputfile', nargs='*',
