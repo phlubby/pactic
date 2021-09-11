@@ -144,7 +144,7 @@ class LuaLexer(object):
                             reset = True
                     else:
                         reset = True
-                elif c is '.':
+                elif c == '.':
                     if seen not in 'dx':
                         reset = True
                 elif c.isalpha() or c in '_':
