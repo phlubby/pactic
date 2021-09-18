@@ -885,7 +885,11 @@ def pack(args):
 
     set_log_info(log_level, pedantic)
 
-    tic = Tic(args, data)
+    tic = Tic(args).read(data, requires_source=True)
+
+    if not tic:
+        return
+
     source = tic.source()
 
     def compress_info(pack_info, extra_bytes_info=None):
@@ -963,22 +967,15 @@ def pack(args):
         log_deep("Best {}: {} {}"
                  .format(p, byte_length(p.length()), p.info))
 
-    size_header = 4
-    size_desc = "+{}".format(size_header)
+    tic_file_content = packer.tic.create(packer.best_source,
+                                         packer.best.data_out)
 
-    if args.default_chunk:
-        size_default_chunk = 4 - (not args.pedantic) * 3
-        size_desc += "+{}".format(size_default_chunk)
-    else:
-        size_default_chunk = 0
+    size_others = len(tic_file_content) - len(packer.best.data_out)
+    size_desc = "+{}b".format(size_others)
 
     info = "Finalized ({})".format(size_desc)
 
-    full_data = packer.best.data_out if packer.best.data_out else stripped
-    # [TODO]
-    full_data += bytearray(4 + size_default_chunk)
-
-    add_stage(info, source, packer, full_data)
+    add_stage(info, source, packer, tic_file_content)
 
     # if args.single_pass:
     #     packer.write_tic()
