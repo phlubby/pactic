@@ -849,6 +849,9 @@ class Packer(src.lualexer.LuaLexer):
         concat_info = self.ids_concat_info[ori_id]
         first_new_id_char = new_id[0]
 
+        if first_new_id_char in 'Xx':
+            if 'd' in concat_info:
+                return False
         if 'x' in concat_info:
             return not self.can_hex_concat(first_new_id_char)
         elif 'd' in concat_info:
