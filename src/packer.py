@@ -8,6 +8,7 @@ import operator
 import os
 import re
 import string
+import sys
 import zlib
 
 from src.common import log, log_deep, log_deeper, log_deepest, \
@@ -804,7 +805,7 @@ class Packer(src.lualexer.LuaLexer):
             assert not skip
 
             if not (perm_count % 16):
-                progress = " {0:.2f}%".format(100 * perm_index / total_perms)
+                progress = " {0:.2f}%".format(100.0 * perm_index / total_perms)
                 if self.log_level >= 2:
                     extra = " ({}/{})".format(perm_index, total_perms)
                     if self.log_level >= 3 and skip_count:
@@ -812,6 +813,7 @@ class Packer(src.lualexer.LuaLexer):
                 else:
                     extra = ""
                 print(progress + extra, end='\r')
+                sys.stdout.flush()  # Required for py2.
 
             # Don't bother trying with \r and \n, it will result in invalid
             # code with quoted strings which then do need spaces, making it
@@ -964,7 +966,7 @@ def pack(args):
 
     full_data = packer.best.data_out if packer.best.data_out else stripped
     # [TODO]
-    full_data += bytes(4 + size_default_chunk)
+    full_data += bytearray(4 + size_default_chunk)
 
     add_stage(info, source, packer, full_data)
 

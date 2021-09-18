@@ -92,4 +92,5 @@ def zopfli_compress(bytes_in, use_extreme=False):
         # assert False, "zopfli compression failed?!"
         return None
 
-    return bytes((ctypes.c_char * num_out.value).from_address(bytes_out.value))
+    return bytes(bytearray((ctypes.c_char * num_out.value)
+                           .from_address(bytes_out.value)))

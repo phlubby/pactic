@@ -142,7 +142,7 @@ class Tic:
 
             log_deep(s)
 
-        self.file.write(bytes(full_chunk))
+        self.file.write(bytearray(full_chunk))
 
     def write(self, filename, uncompressed_data, compressed_data, verbose=1):
         uncomp_length = len(uncompressed_data)
