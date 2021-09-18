@@ -1,10 +1,10 @@
 import re
 import string
 
+from collections import OrderedDict
 
 class LuaLexer(object):
     def __init__(self, log_level):
-        self.all_ids = {}
         self.log_level = log_level
 
     valid_dec_chars = string.hexdigits + '.'
@@ -275,7 +275,7 @@ class LuaLexer(object):
         def fetch_right(ofs):
             return fetch_right_offset(ofs)[0]
 
-        all_ids = {}
+        all_ids = OrderedDict()
         prev_name = ''
         # K=offset V= body-start, body-end, num-ends-needed, full-name, name
         self.func_offsets = func_offsets = {}
@@ -545,7 +545,7 @@ class LuaLexer(object):
 
         known_ids += unknown_vars
 
-        ids_weight = {}
+        ids_weight = OrderedDict()
         for k in known_ids:
             num_refs = len(all_ids[k]['offsets'])
             # [TICKLE]

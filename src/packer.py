@@ -11,6 +11,8 @@ import string
 import sys
 import zlib
 
+from collections import OrderedDict
+
 from src.common import log, log_deep, log_deeper, log_deepest, \
     log_error, set_log_info, byte_length
 from src.ticfile import Tic
@@ -506,7 +508,7 @@ class Packer(src.lualexer.LuaLexer):
         log_deeper("Mutable identifier freq ({0}): {1}"
                    .format(len(self.ids_weight), pr))
 
-        freq_immutable_chars = {}
+        freq_immutable_chars = OrderedDict()
         for c in source:
             if c not in freq_immutable_chars:
                 freq_immutable_chars[c] = 0
@@ -523,9 +525,11 @@ class Packer(src.lualexer.LuaLexer):
         self.char_freq = [c for c in freq_immutable_chars
                           if self.is_valid_identifier_start_char(c[0])]
 
-        pr = str(dict(self.char_freq))[1:-1]
+        pr = ''
+        for c in self.char_freq:
+            pr += "'{}': {}, ".format(c[0], c[1])
         log_deeper("Immutable char reference# ({0}): {1}"
-                   .format(len(self.char_freq), pr))
+                   .format(len(self.char_freq), pr[:-2]))
 
         other_freq = [c for c in freq_immutable_chars
                       if c not in self.char_freq]
