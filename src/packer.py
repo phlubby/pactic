@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 
+import errno
 import itertools
 import math
 import operator
@@ -869,7 +870,9 @@ def pack(args):
         print("Packing {} => {}".format(os.path.basename(args.filename_in),
               os.path.basename(args.filename_out)))
         file = open(args.filename_in, mode='rb')
-    except FileNotFoundError:
+    except EnvironmentError as e:
+        if e.errno != errno.ENOENT:
+            raise
         log_error("No such file: '{}'".format(args.filename_in))
         return None
 
