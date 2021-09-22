@@ -5,6 +5,7 @@ from collections import OrderedDict
 
 class LuaLexer(object):
     def __init__(self, log_level):
+        self.char_identifier_count = len(string.ascii_letters + '_')
         self.log_level = log_level
 
     valid_dec_chars = string.hexdigits + '.'
@@ -18,8 +19,8 @@ class LuaLexer(object):
     def can_hex_concat(c):
         return c in LuaLexer.valid_hex_chars
 
-    def is_concat_safe(self, id):
-        info = self.ids_concat_info[id]
+    def is_concat_safe_slot(self, slot):
+        info = self.slots_concat_info[slot]
         return not ('d' in info or 'x' in info)
 
     @staticmethod
@@ -308,6 +309,9 @@ class LuaLexer(object):
                     set_id_prop(name, 'member')
                     if start and 'a' in self.seen[start - 1]:
                         all_ids[name]['parent'] = prev_name
+                        if name in ['abs', 'atan', 'cos', 'floor',
+                                    'max', 'min', 'pi', 'random', 'sin', 'sqrt', ]:
+                            set_id_prop(name, 'reserved')
 
             if len(func_stack):
                 f = func_offsets[func_stack[-1]]
@@ -491,6 +495,19 @@ class LuaLexer(object):
         # t = mask(t, 'writes')
         t = mask(s)
 
+        def mask_mutable_ids(s, prop=None):
+            for k in all_ids:
+                if 'reserved' in all_ids[k]:
+                    continue
+                if prop and prop not in all_ids[k]:
+                    continue
+                for offset in all_ids[k]['offsets']:
+                    s = s[:offset] + s[offset:].replace(k, '@' * len(k), 1)
+            return s
+
+        masked = mask_mutable_ids(source.decode('utf-8'))
+        self.masked_source = masked
+
         for m in re.finditer('[A-Za-z_]+', t):
             for c in m.group():
                 assert c in self.valid_hex_chars or c in 'Xx', c
@@ -556,17 +573,22 @@ class LuaLexer(object):
 
         self.ids_weight = ids_weight
 
-        self.new_id_offsets = {}
+        self.id_offsets = []
         # [TODO] Feed and update all id offsets, or just the changed ones?
         # for k in all_ids:
         for k in known_ids:
-            self.new_id_offsets[k] = all_ids[k]['offsets'][:]
+            self.id_offsets.append(all_ids[k]['offsets'][:])
 
-        self.ids_concat_info = {k: all_ids[k]['concat_info']
-                                for k in known_ids_freq}
+        self.slots_concat_info = []
+        for k in known_ids:
+            self.slots_concat_info.append(all_ids[k]['concat_info'])
 
         self.known_ids = known_ids
         self.all_ids = all_ids
         self.known_ids_freq = known_ids_freq
+        self.analyzed_source = source
 
         return s.strip()
+
+    def mutable_id_count(self):
+        return len(self.known_ids)

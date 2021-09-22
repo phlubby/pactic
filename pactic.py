@@ -19,7 +19,7 @@ from src.common import log_error
 from src.packer import pack, packer_names
 
 prog = 'pactic'
-PROG_VER = "0.5b"
+PROG_VER = "0.6c"
 parser = argparse.ArgumentParser(prog=prog)
 
 parser.add_argument('inputfile', nargs='*',
@@ -37,9 +37,13 @@ parser.add_argument('--default-chunk', '-c', action='store_true',
 parser.add_argument('--single-pass', '-s', action='store_true',
                     help="Don't perform variations stage")
 
-default_depth = 6
-parser.add_argument('--depth', '-d', type=int, default=default_depth,
+default_depth = 3
+parser.add_argument('--depth', '-d', type=int, default=-1,
                     help="Change initial search depth of "+str(default_depth))
+
+extreme_zopfli_iter_count = 400
+parser.add_argument('--extreme', '-x', nargs='?', type=int, const=extreme_zopfli_iter_count,
+                    help="Use extreme Zopfli settings by changing iteration count (defaults to {})".format(extreme_zopfli_iter_count))
 
 parser.add_argument('--no-transform', '-t', action='store_true',
                     help="Don't attempt to transform functions")

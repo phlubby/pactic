@@ -3,62 +3,115 @@
 from __future__ import print_function
 
 import errno
-import itertools
 import math
+import multiprocessing
 import operator
 import os
+import random
 import re
 import string
 import sys
 import zlib
 
 from collections import OrderedDict
+from copy import copy
+from threading import Thread
 
 from src.common import log, log_deep, log_deeper, log_deepest, \
     log_error, set_log_info, byte_length
+from src.config import CONFIG
 from src.ticfile import Tic
 from src.zopfli import zopfli_compress
 
 import src.lualexer
 
 
-def compress_zlib(uncomp):
-    # comp = zlib.compress(uncomp, zlib.Z_BEST_COMPRESSION)
-    # create baseline of no compression
-    # comp = zlib.compress(uncomp, 0)
-    # comp_size = len(comp)
+def CONFIG_get(s, default=None):
+    if s in CONFIG.__dict__:
+        return CONFIG.__dict__[s]
+    return default
 
+
+zlib_try_optimal_settings_only = CONFIG_get('zlib_try_optimal_settings_only')
+optimal_zlib_settings = {}
+
+for setting in [
+    [zlib.Z_BEST_SPEED, zlib.Z_DEFAULT_STRATEGY],
+    [2, zlib.Z_DEFAULT_STRATEGY],
+    [4, zlib.Z_DEFAULT_STRATEGY],
+    [5, zlib.Z_DEFAULT_STRATEGY],
+    [6, zlib.Z_DEFAULT_STRATEGY],
+    [7, zlib.Z_DEFAULT_STRATEGY],
+    [8, zlib.Z_DEFAULT_STRATEGY],
+    [4, zlib.Z_FILTERED],
+]:
+
+    optimal_zlib_settings[setting[1] * 10 + setting[0]] = setting
+if zlib_try_optimal_settings_only:
+    used_zlib_settings = optimal_zlib_settings
+else:
+    used_zlib_settings = {}
+    for i in range(10 * 5):
+        level = i % 10
+        if level:
+            used_zlib_settings[i] = [level, int(i/10)]
+
+zopfli_iter_count = -1
+iter_count = 0
+
+best_hits = {}
+
+Cat_Match = 'matches'
+Cat_Zlib = 'zlib'
+Cat_Zopfli = 'Zopfli'
+cats = [Cat_Match, Cat_Zlib, Cat_Zopfli]
+
+Info_Cache_Hits = 'Cache hits'
+Info_Cache_Accesses = 'Cache accesses'
+search_info = {}
+
+
+def increase_hits(type):
+    if type not in search_info:
+        search_info[type] = 0
+
+    search_info[type] += 1
+
+
+for setting in used_zlib_settings:
+    best_hits[setting] = 0
+
+
+def compress_zlib(uncomp):
     new_compressed_data = None
     new_compressed_size = 0
 
     comp_size = 256 + len(uncomp)
 
-    # testing with different compression_levels
-    # for i in range(0, 10):
-    #     new_compressed_data = zlib.compress(uncomp, i)
-    #     new_compressed_size = len(new_compressed_data)
-    #     if new_compressed_size < comp_size:
-    #         bestcompression_level = i
-    #         comp = new_compressed_data
-    #         comp_size = new_compressed_size
+    results = {}
 
-    # testing with compressobj, compressionlevels, and strategies
-    # https://docs.python.org/3/library/zlib.html
-    for i1 in range(0, 9 + 1):
-        for i2 in range(0, 5):
-            # i2 = zlib.Z_DEFAULT_STRATEGY (0), zlib.Z_FILTERED,
-            #  zlib.Z_HUFFMAN_ONLY, zlib.Z_RLE, zlib.Z_FIXED (4)
-            # 9 = zlib.DEF_MEM_LEVEL (default 8)
-            compress_obj = zlib.compressobj(i1, zlib.DEFLATED, 15, 9, i2)
-            new_compressed_data = compress_obj.compress(uncomp)
-            new_compressed_data += compress_obj.flush()
-            new_compressed_size = len(new_compressed_data)
+    for k in used_zlib_settings:
+        level, strat = used_zlib_settings[k]
+        compress_obj = zlib.compressobj(level, zlib.DEFLATED, zlib.MAX_WBITS, 9, strat)
+        new_compressed_data = compress_obj.compress(uncomp)
+        new_compressed_data += compress_obj.flush()
+        new_compressed_size = len(new_compressed_data)
 
-            if new_compressed_size < comp_size:
+        results[k] = new_compressed_size
 
-                comp = new_compressed_data
-                comp_size = new_compressed_size
-                comp_info = 'level {}, strat {}'.format(i1, i2)
+        if (not zlib_try_optimal_settings_only and k not in optimal_zlib_settings):
+            continue
+
+        if new_compressed_size < comp_size:
+            comp = new_compressed_data
+            comp_size = new_compressed_size
+            comp_info = 'level {}, strat {}'.format(level, strat)
+
+    if not zlib_try_optimal_settings_only:
+        for k in results:
+            size = results[k]
+            # A zlib setting that gives better results, add to optimal settings
+            assert size >= comp_size, "{}: {} {}".format(k, size, comp_size)
 
     return comp, comp_info
 
@@ -136,7 +189,7 @@ class CompressorZopfli(Compressor):
 
     @staticmethod
     def do_compress(data):
-        return zopfli_compress(data), ""
+        return zopfli_compress(data, zopfli_iter_count), ""
 
 
 def strip_lua_comments(data):
@@ -268,6 +321,116 @@ def packer_names():
     return [str(k()) for k in packers]
 
 
+class XForm(object):
+    def __init__(self, packer, max_replacements=40):
+        self.packer = packer
+        # k = slot index, v = replacement id
+        self.slots_to_id = {}
+        self.whitespace_sep = '?'
+        self.iter = None
+        self.length = -1
+        self.max_replacements = max_replacements
+
+    def copy(self):
+        new = copy(self)
+        new.slots_to_id = dict(new.slots_to_id)
+        return new
+
+    def id_pool(self):
+        return self.packer.chars_sorted
+
+    def used_slots(self):
+        return list(self.slots_to_id.keys())
+
+    def used_ids(self):
+        return list(self.slots_to_id.values())
+
+    def used_id(self, slot):
+        assert self.is_slot_in_use(slot), slot
+        return self.slots_to_id[slot]
+
+    def is_slot_in_use(self, slot):
+        return slot in self.slots_to_id
+
+    def is_id_in_use(self, id):
+        return id in self.slots_to_id.values()
+
+    def set_slot(self, slot, replacement_id):
+        self.slots_to_id[slot] = str(replacement_id)
+
+    def set_slot_to_default(self, slot):
+        self.set_slot(slot, self.default_replacement(slot))
+
+    def free_slot(self, slot):
+        if slot in self.slots_to_id:
+            del self.slots_to_id[slot]
+
+    def default_replacement(self, slot):
+        # Use new id pool here which has concat compatible layout,
+        # unlike chars sorted by freq (chars_sorted).
+        return self.packer.new_id_pool[slot]
+
+    def is_default_replacement(self, slot):
+        return self.used_id(slot) == self.default_replacement(slot)
+
+    def valid_for_slot(self, slot, id, len1):
+        if len1 and len(id) > 1:
+            return False
+
+        if not self.packer.is_concat_compatible_replacement_slot(slot, id):
+            return False
+
+        return True
+
+    def friendly_hash(self):
+        if self.slots_to_id:
+            max_index = max(self.used_slots()) + 1
+        else:
+            max_index = 1
+
+        hash = [' '] * max_index
+
+        for slot in self.slots_to_id:
+            repl = self.slots_to_id[slot]
+            if self.is_default_replacement(slot):
+                repl = '.'
+            hash[slot] = repl
+
+        return "".join(hash)
+
+    def desc(self, with_length=True):
+        s = self.friendly_hash() + ' '
+        ws = {'\t': 'tab', ' ': 'spc', '?': '', 'm': '   '}
+
+        if self.length == -1:
+            assert self.whitespace_sep == '?'
+            return s
+
+        assert self.whitespace_sep != '?'
+
+        assert self.whitespace_sep in ws
+        s += ws[self.whitespace_sep]
+
+        if with_length:
+            s += ' {}b'.format(self.length)
+
+        return s
+
+    def compr_hash(self):
+        used_slots = self.used_slots()
+        max_index = self.max_replacements
+        if used_slots:
+            max_index = max(max_index, max(used_slots))
+
+        xform_hash = [' '] * (max_index + 1)
+
+        for i in self.slots_to_id:
+            xform_hash[i] = self.slots_to_id[i]
+            assert xform_hash[i] == self.used_id(i)
+        s = "".join(xform_hash)
+        return str(s)
+
+
 class Packer(src.lualexer.LuaLexer):
     def __init__(self, args, tic):
         self.args = args
@@ -275,6 +438,10 @@ class Packer(src.lualexer.LuaLexer):
         self.log_level = args.verbose
         self.ran_minify = False
         super(Packer, self).__init__(self.log_level)
+        self.hint_categories = {}
+        self.best_hints = {}
+        self.compr_hashes = {}
+        self.new_id_pool = []
 
         self.best = None
 
@@ -333,18 +500,16 @@ class Packer(src.lualexer.LuaLexer):
         else:
             assert False
 
-        best_length = self.best.length() if self.best else 0
+        best_length = self.atb()
         improved = []
         for pack in self.packers:
             pack.compress(data, perm_info)
 
-            # if pack.length() <= old_best:
-            #     pack.info = perm_info
-            #     pack.log_new_best(self.log_level)
             length = pack.length()
-            if not self.best or length < best_length:
+            if best_length is None or length < best_length:
                 best_length = length
                 self.best = pack
+
                 if pack.data_out:
                     self.best.data_out = pack.data_out[:]
                     improved.append(pack)
@@ -360,6 +525,47 @@ class Packer(src.lualexer.LuaLexer):
 
         return self.best.data_out
 
+    def atb(self):
+        return self.best.length() if self.best else None
+
+    def best_pack(self, data=None, perm_info=''):
+        if data:
+            self.data = data
+        else:
+            assert False
+
+        atb = self.atb()
+        best_length = None
+        best_data = None
+        for pack in self.packers:
+            if self.fast_compression_only and str(pack) != 'zlib':
+                continue
+
+            data_out = pack.compress(data, perm_info)
+
+            length = len(data_out)
+
+            if best_length is None or length < best_length:
+                best_length = length
+                best_data = data_out[:]
+                # if pack.data_out:
+                #     if not self.best:
+                #         self.best = pack
+                #     self.best.data_out = pack.data_out[:]
+                #     improved.append(pack)
+
+                # self.best_source = data[:]
+
+            if atb is None or length < atb:
+                self.best = pack
+
+                if pack.data_out:
+                    self.best.data_out = pack.data_out[:]
+
+                self.best_source = data[:]
+
+        return best_data
+
     def log_new_best(self, pack):
         if not self.ran_minify:
             return
@@ -374,13 +580,12 @@ class Packer(src.lualexer.LuaLexer):
 
         print(s)
 
-    def replace(self, s, old_id, new_id, var_iter=None):
+    def replace_slot(self, s, slot, new_id):
         t = ''
         prev_offset = 0
 
-        offsets = None
-
-        for j, offset in enumerate(self.new_id_offsets[old_id]):
+        old_id = self.known_ids[slot]
+        for offset in self.id_offsets[slot]:
             t += s[prev_offset:offset]
 
             final_replacement = new_id[:]
@@ -389,30 +594,16 @@ class Packer(src.lualexer.LuaLexer):
             t += final_replacement
             prev_offset = offset + len(old_id)
 
-            if len(old_id) != len(final_replacement):
-                if not offsets:
-                    offsets = {}
-                    for k in self.new_id_offsets:
-                        offsets[k] = self.new_id_offsets[k][:]
-                for k in offsets:
-                    for i, ofs in enumerate(self.new_id_offsets[k]):
-                        if i == 0 and k == old_id:
-                            continue
-
-                        if ofs > offset:
-                            offsets[k][i] -= (len(old_id)
-                                              - len(final_replacement))
+            assert len(old_id) == len(final_replacement), "Only change identifier length during minifying?"
 
         t += s[prev_offset:]
 
-        if offsets:
-            return t, offsets
-        else:
-            return t, self.new_id_offsets
+        return t
 
     def strip(self, source):
         source = strip_lua_comments(source)
         self.analyze(source)
+        self.original_id_names = self.known_ids[:]
 
         s = source.decode('utf-8')
         masked = self.mask_source(s)
@@ -433,6 +624,708 @@ class Packer(src.lualexer.LuaLexer):
 
         t = t.strip()
         return t.encode('utf-8')
+
+    def try_xform(self, xform):
+        global iter_count
+        iter_count += 1
+        mutable_id_count = self.mutable_id_count()
+
+        replacements = []
+        for i in range(mutable_id_count):
+            if len(self.known_ids[i]) > 1:
+                break
+            repl_id = (xform.used_id(i) if xform.is_slot_in_use(i) else self.new_id_pool[i])
+            if repl_id == '_':
+                continue
+            replacements.append(repl_id)
+
+        assert len(set(replacements)) == len(replacements), "Dupes in replacement '{}'".format(replacements)
+
+        desc = "#{}: ".format(iter_count)
+
+        best_length = self.atb()
+
+        xform_hash = xform.compr_hash()
+
+        increase_hits(Info_Cache_Accesses)
+        if xform_hash in self.compr_hashes:
+            increase_hits(Info_Cache_Hits)
+
+            cached_xform = self.compr_hashes[xform_hash]
+            assert xform.friendly_hash() == cached_xform.friendly_hash()
+
+            xform.whitespace_sep = cached_xform.whitespace_sep
+            xform.iter = cached_xform.iter
+            xform.length = cached_xform.length
+            xform.from_cache = True
+
+            return
+
+        s = self.analyzed_source.decode('utf-8')
+        s = self.replace_multiple_xform(s, xform)
+
+        for slot in xform.used_slots():
+            new_id = xform.used_id(slot)
+            if not xform.is_default_replacement(slot):
+                old_id = self.original_id_names[slot]
+                desc += "{} → {}, ".format(old_id, new_id)
+
+        xform.iter = iter_count
+
+        # Don't bother trying with \r and \n, it will result in invalid
+        # code with quoted strings which then do need spaces, making it
+        # rather useless to bother.
+        whitespace_chars = {
+            ' ': 'space', '\t': 'tab',
+            # '\r': 'CR', '\n': 'LF'
+        }
+
+        best_whitespace = None
+        comp_len = -1
+
+        ws_results = {}
+        for i, spacing in enumerate(whitespace_chars):
+            final_desc = desc
+            if spacing != ' ':
+                # assert i == 1
+                final_s = s.replace(' ', spacing)
+                final_desc += "space → {}, ".format(
+                    whitespace_chars[spacing])
+            else:
+                final_s = s
+
+            if self.log_level < 2:
+                final_desc = ''
+            comp = self.best_pack(bytes(final_s.encode('utf-8')), final_desc[:-2])
+            comp_len = len(comp)
+
+            if not best_whitespace or comp_len < len(best_whitespace):
+                best_whitespace = comp[:]
+
+            if best_length is None or comp_len < best_length:
+                best_length = comp_len
+
+            ws_results[spacing] = comp_len
+
+        best_spacing = ''
+
+        this_length = len(best_whitespace)
+        num_same_best = 0
+        for ws in ws_results:
+            if ws_results[ws] == this_length:
+                best_spacing = ws
+                num_same_best += 1
+        assert num_same_best
+        if num_same_best > 1:
+            best_spacing = 'm'
+
+        xform.whitespace_sep = best_spacing
+        xform.length = this_length
+        xform.from_cache = False
+
+        assert xform_hash == xform.compr_hash()
+
+        self.compr_hashes[xform_hash] = xform.copy()
+
+    def next_slot_replacement(self, xform, slot, freq_index):
+        old_id = self.new_id_pool[slot]
+        if len(old_id) > 1:
+            return None
+
+        for id in xform.id_pool()[freq_index:]:
+            id = id[0]
+
+            if xform.is_id_in_use(id):
+                continue
+
+            if not xform.valid_for_slot(slot, id, len1=True):
+                continue
+
+            return id
+
+        log_deepest("Almost xhausted searching repl for '{}' slot {}, freq_index {}"
+                    .format(old_id, slot, freq_index))
+
+        for id in xform.id_pool()[:freq_index]:
+            id = id[0]
+
+            if xform.is_id_in_use(id):
+                continue
+
+            if not xform.valid_for_slot(slot, id, len1=True):
+                continue
+
+            return id
+
+        # assert False, old_id + " " + str(freq_index)
+        log_deepest("Exhausted searching repl for '{}' slot {}, freq_index {}"
+                    .format(old_id, slot, freq_index))
+        return None
+
+    def closest_slot_replacement(self, xform, slot):
+        if xform.is_slot_in_use(slot):
+            assert False
+            return xform.used_id(slot)
+
+        default_slot_id = xform.default_replacement(slot)
+        if not xform.is_id_in_use(default_slot_id):
+            # Default is available and the closest
+            return default_slot_id
+
+        repl_id = default_slot_id
+        if len(repl_id) > 1:
+            return repl_id
+            return None
+
+        freq_index = 0 # slot
+        for id in self.new_id_pool[freq_index:]:
+            if xform.is_id_in_use(id):
+                continue
+
+            if not xform.valid_for_slot(slot, id, len1=True):
+                continue
+
+            return id
+
+        print("Exhausted searching repl for '{}' findindex:{}"
+              .format(self.new_id_pool[slot], freq_index))
+        assert False
+        return None
+
+    def fetch_slot_candidates_by_match(self, slot, candi2):
+        def match_count(s, match_length=3):
+            matches = {}
+
+            # Usually close enough
+            for i, c in enumerate(s):
+                if i < match_length:
+                    continue
+                match = s[i-match_length:i]
+                if match not in matches:
+                    matches[match] = 0
+                matches[match] += 1
+
+            return len(matches)
+
+        def results_with_match_length(xmatch_length, candi):
+            ids = self.chars_sorted
+
+            xf = XForm(self)
+            for id in ids:
+                if (id in self.freq_immutable_chars
+                   and self.freq_immutable_chars[id] < 1):
+                    continue
+
+                if not xf.valid_for_slot(slot, id, len1=True):
+                    continue
+
+                xf.set_slot(slot, id)
+
+                source = self.replace_multiple_xform(self.masked_source[:], xf)[:]
+
+                num_matches = match_count(source, match_length)
+                candi[id] = num_matches
+
+        res = {}
+        for match_length in range(3, 2, -1):
+            results_with_match_length(match_length, res)
+            max_matches = max(res.values())
+
+            for id in res:
+                res[id] = max_matches - res[id]
+
+        for k in res:
+            weight = res[k]
+            if weight > 0:
+                candi2[k] = weight
+
+    def log_hints(self, cat):
+        log_deepest("Slot hints for {} category:".format(cat))
+        for slot in self.hint_categories[cat]:
+            log_deepest("   {}: {}".format(slot,
+                        str(self.hint_categories[cat][slot])[1:-1]))
+
+    def probe_matches(self):
+        begin = 0
+
+        # [TICKLE]
+        end = min(self.mutable_id_count(), 10)
+        end = min(end, self.char_identifier_count)
+
+        self.fast_compression_only = True
+        cat = Cat_Match
+        self.hint_categories[cat] = {}
+
+        for slot in range(begin, end):
+            if len(self.new_id_pool[slot]) > 1:
+                break
+            res2 = {}
+            self.fetch_slot_candidates_by_match(slot, res2)
+            if not res2:
+                continue
+
+            self.update_slot_candidates(cat, slot, res2)
+
+        self.fast_compression_only = False
+
+        self.best_hints[cat] = self.get_best_slot_hints(cat)
+        self.log_hints(cat)
+
+    def get_best_slot_hints(self, cat):
+        slots = {}
+
+        final_perm_slots = {}
+        for slot in self.hint_categories[cat]:
+            slots[slot] = dict(self.hint_categories[cat][slot])
+
+        while slots:
+            max_per_slot = {}
+            for slot in slots:
+                if not slots[slot]:
+                    continue
+
+                candi = slots[slot]
+                max_per_slot[slot] = max(candi.values())
+
+            if not max_per_slot:
+                break
+
+            max_weight = max(max_per_slot.values())
+
+            def slots_with_max(max_val):
+                slot = {}
+                for i, slot_idx in enumerate(max_per_slot):
+                    if max_per_slot[slot_idx] == max_val:
+                        slot[slot_idx] = slots[slot_idx]
+                return slot
+
+            slots_with_max = slots_with_max(max_weight)
+            chars_with_max = []
+
+            slot_candi = []
+            for slot in slots_with_max:
+                for id in slots_with_max[slot]:
+                    if slots[slot][id] == max_weight:
+                        chars_with_max.append(id)
+                        slot_candi.append([slot, id])
+
+            # [TICKLE][TODO]
+            si = 0
+
+            slot = slot_candi[si][0]
+            id = slot_candi[si][1]
+
+            assert len(id) < 2, id
+
+            assert slot not in final_perm_slots
+            final_perm_slots[slot] = (id, max_weight,)
+            del slots[slot]
+            for slot in slots:
+                if id in slots[slot]:
+                    del slots[slot][id]
+
+        # print(final_perm_slots)
+        return final_perm_slots
+
+    def try_one_freq_closest_repl(self, orig_xform, main_slot, desired_repl_id):
+        others_fixed = None
+
+        mutable_id_count = self.mutable_id_count()
+        assert main_slot < mutable_id_count
+
+        if not self.is_concat_compatible_replacement_slot(main_slot, desired_repl_id):
+            return
+
+        for slot in range(main_slot):
+            if others_fixed:
+                continue
+            if orig_xform.is_slot_in_use(slot):
+                if orig_xform.used_id(slot) == desired_repl_id:
+                    return
+                continue
+
+            if self.new_id_pool[slot] == desired_repl_id:
+                default_id = self.new_id_pool[main_slot]
+                orig_xform.set_slot(slot, default_id)
+                if not self.is_concat_compatible_replacement_slot(
+                     slot, default_id):
+                    return
+
+            if not orig_xform.is_slot_in_use(slot):
+                orig_xform.set_slot_to_default(slot)
+
+        if orig_xform.is_id_in_use(desired_repl_id):
+            return
+
+        assert not orig_xform.is_id_in_use(desired_repl_id)
+
+        if orig_xform.is_slot_in_use(main_slot):
+            return
+
+        if desired_repl_id in self.chars_indexed:
+            freq_index = self.chars_indexed[desired_repl_id]
+            actual_repl_id = self.next_slot_replacement(orig_xform, main_slot, freq_index)
+        else:
+            actual_repl_id = desired_repl_id
+            if orig_xform.is_id_in_use(actual_repl_id):
+                return
+
+        if not actual_repl_id:
+            assert False, main_slot
+            return
+
+        orig_xform.set_slot(main_slot, actual_repl_id)
+
+        for slot in range(main_slot+1, mutable_id_count):
+            if others_fixed:
+                continue
+
+            if orig_xform.is_slot_in_use(slot):
+                assert False
+                continue
+
+            id = self.closest_slot_replacement(orig_xform, slot)
+
+            if id:
+                assert(self.is_valid_identifier_start_char(id))
+                orig_xform.set_slot(slot, id)
+            else:
+                assert len(id) > 1, id
+                pass
+
+        if others_fixed:
+            for slot in range(mutable_id_count):
+                if slot == main_slot:
+                    continue
+
+                if orig_xform.is_slot_in_use(slot):
+                    continue
+
+                orig_xform.set_slot(i, others_fixed)
+
+        self.try_xform(orig_xform)
+
+        assert orig_xform.length != -1
+
+    def try_one_freq(self, orig_xform, main_slot, desired_repl_id):
+        mutable_id_count = self.mutable_id_count()
+        assert main_slot < mutable_id_count
+
+        if not orig_xform.valid_for_slot(main_slot, desired_repl_id, len1=True):
+            return
+
+        if orig_xform.is_slot_in_use(main_slot):
+            return
+
+        for slot in range(main_slot):
+            if not orig_xform.is_slot_in_use(slot):
+                orig_xform.set_slot_to_default(slot)
+
+        assert not orig_xform.is_slot_in_use(main_slot)
+
+        if desired_repl_id in self.chars_indexed:
+            freq_index = self.chars_indexed[desired_repl_id]
+            actual_repl_id = self.next_slot_replacement(orig_xform, main_slot, freq_index)
+        else:
+            actual_repl_id = desired_repl_id
+            if orig_xform.is_id_in_use(actual_repl_id):
+                return
+
+        if not actual_repl_id:
+            assert False, main_slot
+            return
+
+        orig_xform.set_slot(main_slot, actual_repl_id)
+
+        for slot in range(main_slot+1, mutable_id_count):
+            if orig_xform.is_slot_in_use(slot):
+                continue
+
+            id = self.next_slot_replacement(orig_xform, slot, 0)
+            if id:
+                orig_xform.set_slot(slot, id)
+            else:
+                # [TODO] many ids
+                # assert False, main_slot
+                break
+
+        self.try_xform(orig_xform)
+
+    def get_slot_candidates(self, xform, main_slot):
+
+        max_chars = min(self.char_depth, len(xform.id_pool()))
+
+        ids = []
+
+        def add_id(id):
+            if id in ids:
+                return
+
+            if xform.is_id_in_use(id):
+                return
+
+            if not xform.valid_for_slot(main_slot, id, True):
+                return
+
+            ids.append(str(id))
+            return
+
+        def add_all_from_cat(cat):
+            if cat not in self.hint_categories:
+                return
+
+            group = self.hint_categories[cat]
+            for id in group[main_slot]:
+                add_id(id)
+
+        def add_best_from_cat(cat, all=False):
+            if cat not in self.hint_categories:
+                return
+
+            hints = self.best_hints[cat]
+            if main_slot not in hints:
+                return
+
+            id, weight = hints[main_slot]
+
+            # [TICKLE]
+            if weight < 2:
+                return
+
+            add_id(id)
+
+        def add_multiple_from_cat(cat, max_ids=3):
+            if cat not in self.hint_categories:
+                return
+
+            hints = self.hint_categories[cat]
+            for id in hints[main_slot][:max_ids]:
+                add_id(id)
+
+            # add_multiple_from_cat(cat)
+
+        # for cat in cats:
+        #     add_best_from_cat(cat)
+
+        # [TICKLE]
+        slot = max(0, main_slot + 0)
+
+        # [TICKLE]
+        if main_slot == len(self.known_ids) - 1:
+            # Actually reached the end (few ids?), try more chars
+            max_chars = int(max_chars * 1.5)
+        while len(ids) < max_chars:
+            if slot >= len(self.new_id_pool):
+                break
+            id = self.new_id_pool[slot]
+            if len(id) > 1:
+                break
+            add_id(id)
+            slot += 1
+
+        for cat in cats:
+            add_best_from_cat(cat)
+
+        # [TICKLE] Introducing a new char can be useful (or q is special, sometimes)
+        add_id('q')
+
+        return ids
+
+    def all_results(self, orig_xform, slot, repl_ids, try_func, res):
+        xform = orig_xform.copy()
+
+        best = worst = None
+
+        results = []
+
+        atb = prev_atb = self.atb()
+
+        use_threads = CONFIG_get('use_threads', True)
+
+        if use_threads:
+            threads = []
+
+            xform_results = {}
+            repl_index = 0
+            id_count = len(repl_ids)
+            thread_count = multiprocessing.cpu_count()
+            while repl_index < id_count:
+
+                for i in range(thread_count):
+                    xf = xform.copy()
+                    repl_id = repl_ids[repl_index]
+                    xform_results[repl_id] = xf
+
+                    thread = Thread(
+                        target=try_func,
+                        args=(xform_results[repl_id], slot,
+                              repl_ids[repl_index], ))
+
+                    threads.append(thread)
+                    thread.start()
+                    repl_index += 1
+                    if repl_index == id_count:
+                        break
+
+                for i, thread in enumerate(threads):
+                    thread.join()
+
+        for repl_id in repl_ids:
+            if use_threads:
+                applied_xform = xform_results[repl_id]
+            else:
+                applied_xform = orig_xform.copy()
+                try_func(applied_xform, slot, repl_id)
+
+            if applied_xform.length == -1:
+                continue
+
+            length = applied_xform.length
+
+            if length < atb:
+                atb = length
+                msg = " new best!"
+                self.write_tic()
+            elif length == atb:
+                # self.bes
+                msg = " same as best"
+            else:
+                msg = ""
+
+            cache_status = " (cached)" if applied_xform.from_cache else ""
+            log_deepest("→ {} {}{}b{}{}".format(
+                applied_xform.desc(with_length=False),
+                " " * (11 + length - prev_atb),
+                length,
+                msg,
+                cache_status
+                ))
+
+            if best is None or length < best:
+                best = length
+            if worst is None or length > worst:
+                worst = length
+
+            results.append([repl_id, applied_xform])
+
+        if not results:
+            # assert False
+            return None, None
+
+        for result in results:
+            expected_id, applied_xform = result
+
+            actual_char = applied_xform.used_id(slot)
+            assert expected_id == actual_char
+
+            if actual_char in res:
+                if applied_xform.length > res[actual_char].length:
+                    continue
+
+            res[actual_char] = applied_xform
+
+        return worst, best
+
+    def try_with_hints(self, cat):
+        static_xform = XForm(self)
+
+        log_deepest("Trying with probe from " + cat)
+
+        slot_hints = self.best_hints[cat]
+        for slot in slot_hints:
+            id, weight = slot_hints[slot]
+
+            static_xform.set_slot(slot, id)
+
+        for slot in range(self.mutable_id_count()):
+            if len(self.new_id_pool[slot]) > 1:
+                break
+
+            if static_xform.is_slot_in_use(slot):
+                continue
+
+            id = self.closest_slot_replacement(static_xform, slot)
+            assert id
+
+            static_xform.set_slot(slot, id)
+
+        self.try_xform(static_xform)
+        log_deepest("With {} hints: {}".format(cat, static_xform.length))
+
+    def probe_slots(self, cat):
+        if cat in self.best_hints:
+            return
+
+        if self.log_level > 2:
+            print("Probing with {}".format(cat))
+            log_error("Probing...")
+        elif self.log_level > 1:
+            log("Probing...")
+
+        fast = (cat == 'zlib')
+
+        self.fast_compression_only = fast
+
+        begin = 0
+        end = self.mutable_id_count()
+        if not fast:
+            end = min(end, 20)
+        end = min(end, self.char_identifier_count)
+
+        for slot in range(begin, end):
+            xform = XForm(self)
+            if xform.is_slot_in_use(slot):
+                continue
+
+            candi = {}
+
+            worst, best = self.all_results(
+                xform,
+                slot,
+                list(self.chars_sorted),
+                try_func=self.try_one_freq_closest_repl,
+                res=candi)
+
+            final_slot_candi = {}
+            for k in candi:
+                weight = worst - candi[k].length
+                if weight <= 1:
+                    continue
+                final_slot_candi[k] = weight
+
+            self.update_slot_candidates(cat, slot, final_slot_candi)
+
+        self.fast_compression_only = False
+        # self.best = None
+        self.log_hints(cat)
+        self.best_hints[cat] = self.get_best_slot_hints(cat)
+
+    def apply_best_hints_to_xform(self, cat, xform, main_slot=0):
+        ids_seen = []
+
+        hints = self.best_hints[cat]
+        for slot in hints:
+            ids = hints[slot]
+
+            if not ids:
+                continue
+
+            for id in ids:
+                if slot < main_slot:
+                    continue
+
+                if id in ids_seen:
+                    continue
+
+                if xform.is_id_in_use(id):
+                    continue
+
+                log_deepest("Perm slot {}: '{}'".format(slot, id))
+                xform.set_slot(slot, id)
+                assert id not in ids_seen
+                if id not in ids_seen:
+                    ids_seen.append(id)
+                break
 
     def xform_funcs(self, source):
         self.analyze(source)
@@ -499,13 +1392,13 @@ class Packer(src.lualexer.LuaLexer):
 
         self.analyze(source)
 
-        source = source.decode('utf-8')
+        source = str(source.decode('utf-8'))
         all_ids = self.all_ids
         known_ids = self.known_ids
         known_ids_freq = self.known_ids_freq
 
-        pr = ' '.join(["{}: {},".format(
-            v, self.ids_weight[v]) for v in known_ids_freq])[:-1]
+        pr = ' '.join(["{}: {}x,".format(
+            v, len(all_ids[v]['offsets'])) for v in known_ids_freq])[:-1]
         log_deeper("Mutable identifier freq ({0}): {1}"
                    .format(len(self.ids_weight), pr))
 
@@ -522,9 +1415,13 @@ class Packer(src.lualexer.LuaLexer):
 
         freq_immutable_chars = sorted(freq_immutable_chars.items(),
                                       key=operator.itemgetter(1), reverse=True)
+        self.freq_immutable_chars = {c[0]:c[1] for c in freq_immutable_chars}
 
         self.char_freq = [c for c in freq_immutable_chars
                           if self.is_valid_identifier_start_char(c[0])]
+
+        self.chars_sorted = [c[0] for c in self.char_freq]
+        self.chars_indexed = {char: index for index, char in enumerate(self.chars_sorted)}
 
         pr = ''
         for c in self.char_freq:
@@ -541,7 +1438,7 @@ class Packer(src.lualexer.LuaLexer):
         # [TODO]
         # - use digits in identifiers
         # - always use concat-safe vars for at least vars of len 2+?
-        def create_id_pool(num_wanted_ids):
+        def create_id_pool(id_count):
             sorted_chars = "".join([c[0] for c in freq_immutable_chars])
             for c in string.ascii_lowercase + string.ascii_uppercase + '_':
                 if c not in sorted_chars:
@@ -552,6 +1449,8 @@ class Packer(src.lualexer.LuaLexer):
                     continue
                 if c in all_ids and 'declared' not in all_ids[c]:
                     # assert False, c
+                    log_deepest("Undeclared identifier '{}'?".format(c))
+                    # continue
                     continue
                 valid_chars += c
 
@@ -564,96 +1463,77 @@ class Packer(src.lualexer.LuaLexer):
             pool = list(valid_chars)
 
             var_length = 2
-            while len(pool) < num_wanted_ids:
-
-                for c in valid_chars:
-                    pool.append(c * var_length)
+            while len(pool) < id_count:
                 num_already_added = len(valid_chars)
 
-                num_needed = num_wanted_ids - len(pool) + num_already_added
+                num_needed = id_count - len(pool) + num_already_added
                 if num_needed <= 0:
-                    return pool[:num_wanted_ids]
+                    return pool[:id_count]
 
                 # [TICKLE] Use as little freq used chars as required.
-                iters = int(math.sqrt(num_needed)) + 1
-                perms = itertools.product(valid_chars[:iters],
-                                          repeat=var_length)
+                num_freq_chars_used = int(math.sqrt(num_needed)) + 1
 
-                for var in sorted(perms):
-                    name = ''.join(var)
+                iters = int(pow(num_freq_chars_used, var_length))
+
+                def new_id_by_index(var_length, index):
+                    s = ''
+                    mod = 1
+                    for i in range(var_length):
+                        idx = int((index / mod)) % num_freq_chars_used
+                        mod *= num_freq_chars_used
+                        s = valid_chars[idx] + s
+
+                    return s
+
+                for i in range(iters):
+                    name = new_id_by_index(var_length, i)
+
                     if name in pool or name in all_ids:
                         continue
 
                     pool.append(name)
-                    if len(pool) == num_wanted_ids:
-                        return pool
 
                 var_length += 1
 
             return pool
 
         # [TICKLE]
-        DEF_CHAR_DEPTH = self.args.depth
-        DEF_ID_DEPTH = DEF_CHAR_DEPTH
+        char_depth = CONFIG_get('max_char_depth', 10)
+        char_depth = max(1, char_depth)
+        self.char_depth = min(char_depth, len(self.char_freq))
 
-        DEF_CHAR_DEPTH = max(1, DEF_CHAR_DEPTH)
-        DEF_ID_DEPTH = max(1, DEF_ID_DEPTH)
+        id_depth = self.args.depth
+        if id_depth == -1:
+            id_depth = CONFIG_get('max_id_depth', 3)
+        id_depth = max(1, id_depth)
+        self.id_depth = min(id_depth, len(self.known_ids))
 
-        self.chars_depth = min(DEF_CHAR_DEPTH, len(self.char_freq))
-        self.id_depth = min(DEF_ID_DEPTH, len(self.known_ids))
         # [TODO]
         self.replace_index = 0
 
         id_rename_count = len(known_ids_freq) - 0
 
-        ids = [k for k in self.ids_concat_info if not self.is_concat_safe(k)]
-        num_separated_identifiers_required = len(ids)
+        full_id_pool = create_id_pool(len(known_ids))
 
-        # [TICKLE]
-        if num_separated_identifiers_required < 10:
-            self.chars_depth += 1
-            self.id_depth += 1
+        def find_concat_compatible_replacement_for_slot(slot):
+            j = 0
+            while (j < len(full_id_pool)
+                    and not self.is_concat_compatible_replacement_slot(
+                    slot, full_id_pool[j])):
+                j += 1
 
-        self.id_depth = min(self.id_depth, len(self.known_ids))
+            if j == len(full_id_pool):
+                assert False, slot
+                return -1
 
-        # [TICKLE]
-        prefill = []
-        for id in self.known_ids_freq:
-            if len(id) > 1:
-                break
-
-            if id[0] not in string.hexdigits:
-                continue
-
-            prefill += id[0]
-            break
-
-        diff = self.chars_depth - len(self.known_ids) - 3
-        if diff > 0:
-            self.chars_depth += diff
-
-        pool_length = max(self.chars_depth, len(known_ids))  # [TODO]
-        full_id_pool = create_id_pool(pool_length)
+            return j
 
         new_id_pool = []
 
         i = 0
-        num_wanted_ids = pool_length
+        num_wanted_ids = len(full_id_pool)
 
         while i < num_wanted_ids:
-            if len(prefill):
-                j = 0
-                while (j < len(full_id_pool)
-                       and (full_id_pool[j] != prefill[0])):
-                    j += 1
-                if j < len(full_id_pool):
-                    new_id_pool.append(prefill[0])
-                    i += 1
-                    del full_id_pool[j]
-
-                del prefill[0]
-                continue
-
             v = full_id_pool[0]
 
             must_replace_var = i < id_rename_count
@@ -667,17 +1547,9 @@ class Packer(src.lualexer.LuaLexer):
 
             del_index = 0
             if must_replace_var:
-
-                j = 0
-
-                while (j < len(full_id_pool)
-                       and not self.is_concat_compatible_replacement(
-                        known_ids_freq[i], full_id_pool[j])):
-                    j += 1
-                # assert j != len(full_id_pool)
-                if j != len(full_id_pool):
-                    v = full_id_pool[j]
-                    del_index = j
+                j = find_concat_compatible_replacement_for_slot(i)
+                v = full_id_pool[j]
+                del_index = j
 
             del full_id_pool[del_index]
 
@@ -686,168 +1558,446 @@ class Packer(src.lualexer.LuaLexer):
 
         s = source[:]
 
-        for i, var in enumerate(known_ids_freq):
-            s, self.new_id_offsets = self.replace(s, var, new_id_pool[i])
+        s_list = []
+        used_indices = []
+        for c in s:
+            s_list.append(str(c))
+            used_indices.append(True)
+
+        for slot, var in enumerate(known_ids):
+            new_id = new_id_pool[slot]
+
+            assert self.is_concat_compatible_replacement_slot(
+                slot, new_id), "concat incompatible replacement '{}' for '{}'".format(new_id, var)
+
+            for offset in self.id_offsets[slot]:
+                s_list[offset] = [new_id[:]][:]
+                # for i in range(len(new_id), len(var)):
+                for i in range(1, len(var)):
+                    assert used_indices[offset + i] is True
+                    used_indices[offset + i] = False
+
+        t = ""
+        for i, used in enumerate(used_indices):
+            if used:
+                t += "".join(s_list[i])
 
         self.new_id_pool = new_id_pool
+        self.new_id_to_index = {}
+        for i, id in enumerate(self.new_id_pool):
+            self.new_id_to_index[id] = i
 
-        return s.encode('utf-8')
+        self.analyze(t.encode('utf-8'))
+
+        # [TODO] Quickly try with (somewhat) left-over probing for single pass.
+        single_pass = self.args.single_pass
+
+        if single_pass or CONFIG_get('use_match_probe') or CONFIG_get('replace_ids_outside_of_search_range_with_match_hints'):
+            self.probe_matches()
+
+        if single_pass or CONFIG_get('use_zlib_probe'):
+            self.probe_slots(Cat_Zlib)
+
+        # if single_pass or CONFIG_get('use_zopfli_probe'):
+        if CONFIG_get('use_zopfli_probe'):
+            self.probe_slots(Cat_Zopfli)
+
+        if single_pass:
+            self.try_with_hints(Cat_Match)
+            self.try_with_hints(Cat_Zlib)
+            # self.try_with_hints(Cat_Zopfli)
+
+        return t.encode('utf-8')
+
+    def replace_multiple_xform(self, s, xform):
+        for slot in xform.used_slots():
+
+            if slot >= len(self.new_id_pool):
+                assert False, slot
+                # continue
+
+            s = self.replace_slot(s, slot, xform.used_id(slot))
+
+        return s
+
+    # replacements = dict. key = id, value = weight
+    def update_slot_candidates(self, cat, slot, replacements):
+        if cat not in self.hint_categories:
+            self.hint_categories[cat] = {}
+
+        assert slot not in self.hint_categories[cat]
+        self.hint_categories[cat][slot] = replacements
 
     def variate(self, source):
+        self.analyze(source)
         self.ran_minify = True
         sep = ", "
 
         def list_s(list):
             return "".join(k + sep for k in list)[:-len(sep)]
 
-        log_deeper("Original identifiers used in permutations:  "
-                   + list_s(self.known_ids_freq[:self.chars_depth]))
-        log_deeper("Replaced identifiers used for permutations: "
-                   + list_s(self.new_id_pool[:self.chars_depth]))
+        categories = {}
+        for i, cat in enumerate(self.slots_concat_info):
+            for c in cat:
+                if c == ' ':
+                    continue
+
+                if c not in categories:
+                    categories[c] = []
+
+                k = self.known_ids_freq[i]
+                categories[c] += [k]
+
+        if categories:
+            log_deeper("Concatenation info:")
+
+        for cat in categories:
+            s = ''
+            if cat == 'd':
+                s = 'decimal'
+            elif cat == 'x':
+                s = 'hexadecimal'
+            else:
+                assert False, c
+
+            log_deeper("    Sticky with {}: {}".format(s, ", ".join(categories[cat])))
+
+        id_count = len(self.original_id_names)
+        log_deeper("Original identifiers found: "
+                   + list_s(self.original_id_names))
+        log_deeper("Default replacement identifiers used: "
+                   + list_s(self.new_id_pool[:id_count]))
 
         source = source.decode('utf-8')
 
-        known_ids_freq = self.known_ids_freq
+        new_id_view_base = []
+        self.new_var_names = []
 
-        new_id_view_base = {}
-        for i, k in enumerate(known_ids_freq):
-            new_id_view_base[self.new_id_pool[i]] = self.new_id_offsets[k][:]
-
-        id_replacements = []
-
-        for i, k in enumerate(known_ids_freq[self.replace_index:]):
-            id_replacements.append((k, self.new_id_pool[i], ))
-
-        s = "{} → {}"
-        desc = (sep.join("{} → {}".format(k[0], k[1])
-                for i, k in enumerate(id_replacements[self.chars_depth:])))
-        log_deeper("Permanent identifier replacements: " + desc)
+        for i, ofs in enumerate(self.id_offsets):
+            new_id_view_base.append(ofs[:])
+            self.new_var_names.append(self.new_id_pool[i])
 
         # [TODO] This can be empty initially now?
         self.new_id_pool = self.new_id_pool[self.replace_index:]
-        var_names_occupied = self.new_id_pool[
-            self.id_depth:len(self.known_ids)]
 
-        num_chars_perm = min(len(self.new_id_pool), self.chars_depth)
-        chars_perm = ''.join([self.new_id_pool[i]
-                             for i in range(num_chars_perm)])
+        global iter_count
+        iter_count = 1
 
-        log_deeper("Chars used in permutation: " + chars_perm)
-        log_deeper("Var names occupied: " + str(var_names_occupied))
+        self.fast_compression_only = False
 
-        perms = itertools.permutations(chars_perm, self.id_depth)
-        total_perms = 0
-        for x in perms:
-            total_perms += 1
-        perms = itertools.permutations(chars_perm, self.id_depth)
+        xform = XForm(self)
 
-        self.new_id_offsets = dict(new_id_view_base)
-        for k in self.new_id_offsets:
-            self.new_id_offsets[k] = new_id_view_base[k][:]
+        def best_results(orig_xform, slot, repl_ids, try_func):
+            id_results = {}
 
-        skip_count = 0
-        perm_count = 1
-        log_deepest("Trying {} variations".format(total_perms))
-        for perm_index, perm in enumerate(perms):
-            s = source[:]
-            desc = "#{}: ".format(perm_count)
-            vars_used = var_names_occupied[:]
+            ids = []
+            for id in repl_ids:
+                if orig_xform.is_id_in_use(id):
+                    continue
+                ids.append(id)
 
-            self.new_id_offsets = dict(new_id_view_base)
+            # note("Checking maze '{}' with path(s) ".format(prefix) + list_s(ids))
 
-            skip = False
+            atb = self.atb()
+            worst, best = self.all_results(orig_xform, slot, ids, try_func, id_results)
 
-            for i, new_id in enumerate(perm):
-                old_id = self.new_id_pool[i]
-                origin_id_name = id_replacements[i][0]
+            if not id_results:
+                return None
 
-                assert new_id not in vars_used
+            def improved(length):
+                return atb is None or length < atb
 
-                if not self.is_concat_compatible_replacement(
-                     known_ids_freq[i], new_id):
-                    # [TODO] Don't bother trying with space preprended?
-                    # new_id = ' ' + new_id
-                    skip = True
-                    break
+            s_xform = orig_xform.compr_hash().rstrip()
+            prefix = s_xform if len(s_xform) else ''
+            action = "Checked maze '{}': ".format(prefix)
 
-            if skip:
-                # log_deepest("Skipping: " + desc)
-                skip_count += 1
-                continue
+            # if worst == best and not improved(best):
+            if worst == best:
+                increase_hits("Skipped empty")
+                note(action + "Discarding all same worse results ({})".format(list_s(ids)))
+                return None
 
-            for i, new_id in enumerate(perm):
-                old_id = self.new_id_pool[i]
-                origin_id_name = id_replacements[i][0]
+            best_results = {}
 
-                if origin_id_name != new_id:
-                    desc += "{} → {}, ".format(
-                        id_replacements[i][0], new_id)
+            path_info = ''
+            for id in id_results:
+                applied_xform = id_results[id]
 
-                assert new_id not in vars_used
+                length = applied_xform.length
 
-                vars_used.append(new_id)
+                # [TICKLE]
+                # if length == worst and worst > best:
+                if length == worst and length > atb:
+                    continue
 
-                assert (new_id[0] not in string.hexdigits
-                        or self.all_ids[known_ids_freq[i]]['concat_info']
-                        not in 'dx')
+                desc = str(id)
+                discardable = True
+                if improved(length):
+                    discardable = False
+                    desc += "*"
+                elif length == atb:
+                    discardable = False
+                    desc += "~"
 
-                s, self.new_id_offsets = self.replace(
-                    s, old_id, new_id, i)
-                # new_s, new_offsets = self.replace(
-                #     s, old_id, new_id, i)
-                # if new_offsets:
-                #     s = new_s
-                #     self.new_id_offsets = new_offsets
-                # else:
-                #     skip = True
-                # if skip:
+                if discardable:
+                    if length > (best - worst) / 2:
+                        continue
+                    if c in self.freq_immutable_chars and self.freq_immutable_chars[c] < 3:
+                        continue
+
+                    if abs(length - best) > 2:
+                        continue
+
+                best_results[id] = applied_xform
+                path_info += desc + " "
+
+                # # [TODO]
+                # if len(best_results) > <x>:
+                #     log_deepest("Mostly ({}) of same/best results".format(len(best_results)))
                 #     break
 
-            # if skip:
-            #     log_deepest("Skipping: " + desc)
-            #     skip_count += 1
-            #     continue
-            assert not skip
+            if path_info:
+                note(action + "Took notes of path(s) " + path_info)
+            else:
+                note(action + "Discarded ({})".format(list_s(ids)))
+            return best_results
 
-            if not (perm_count % 16):
-                progress = " {0:.2f}%".format(100.0 * perm_index / total_perms)
-                if self.log_level >= 2:
-                    extra = " ({}/{})".format(perm_index, total_perms)
-                    if self.log_level >= 3 and skip_count:
-                        extra += " skipped {}".format(skip_count)
+        def note(s):
+            level = self.log_level
+
+            if level < 3:
+                r = ""
+                if '*' in s:
+                    if level < 1:
+                        r = "\\*/"
+                    else:
+                        r = "\\{}b/".format(self.best.length())
+                elif '~' in s:
+                    r = "~"
+                elif 'iscard' in s:
+                    r = "x"
+                elif 'ontinu' in s:
+                    r = ">>"
                 else:
-                    extra = ""
-                print(progress + extra, end='\r')
+                    pass
+
+                    def rand():
+                        chars = "/\\"
+                        return chars[random.randint(0, len(chars) - 1)]
+                    r += rand()
+                    if random.randint(0, 1):
+                        r += rand()
+                print(r, end='')
                 sys.stdout.flush()  # Required for py2.
 
-            # Don't bother trying with \r and \n, it will result in invalid
-            # code with quoted strings which then do need spaces, making it
-            # rather useless to bother.
-            whitespace_chars = {
-                ' ': 'space', '\t': 'tab',
-                # '\r': 'CR', '\n': 'LF'
-            }
+            else:
+                log_deeper('    ' * self.depth + s)
 
-            for spacing in whitespace_chars:
-                final_desc = desc
-                if spacing != ' ':
-                    final_s = s.replace(' ', spacing)
-                    final_desc += "space → {}, ".format(
-                        whitespace_chars[spacing])
-                else:
-                    final_s = s
+        def enter_maze(orig_xform, main_slot=0, prefix_hashes=None, new_game=False):
+            if prefix_hashes is None:
+                prefix_hashes = {'': 0}
+            if new_game or (not main_slot and not prefix_hashes):
+                self.depth = 0
+                s = "Entering maze"
+                if self.log_level > 0:
+                    ori_phrase = "Stay a while, stay forever?"
 
-                if self.log_level < 2:
-                    final_desc = ''
-                self.compress(bytes(final_s.encode('utf-8')), final_desc[:-2])
+                    phrase = ori_phrase
+                    if self.log_level > 1:
+                        phrase = ori_phrase[:random.randint(0, len(ori_phrase))]
 
-            perm_count += 1
-        print(end='')
+                    if self.log_level > 2:
+                        li = list(phrase)
+                        for i in range(random.randint(0, int(len(phrase) / 2))):
+                            a = random.randint(0, len(li) - 1)
+                            b = random.randint(0, len(li) - 1)
+                            li[a], li[b] = li[b], li[a]
+                        phrase = "".join(li)
+
+                    s += ". " + phrase
+
+                print(s)
+
+                extra_slots = 0
+                for i, si in enumerate(orig_xform.used_slots()):
+                    extra_slots += 1
+                self.last_slot = main_slot + self.char_depth + extra_slots
+            else:
+                note("Continuing in maze '{}' (slot {})".format(orig_xform.compr_hash().rstrip(), main_slot))
+
+                self.depth += 1
+                for s in prefix_hashes:
+                    assert len(s) < main_slot + 1
+
+            log_deepest("Search slot {} ({} prefix(es), {})"
+                        .format(main_slot,
+                                len(prefix_hashes) if prefix_hashes else "@root",
+                                prefix_hashes if prefix_hashes else "none"))
+
+            num_slots = self.mutable_id_count()
+
+            ret_reason = "Exiting maze (slot {}) : ".format(main_slot)
+            if main_slot >= num_slots:
+                log_deepest(ret_reason + "last slot reached")
+                return
+
+            if main_slot > self.last_slot:
+                log_deepest(ret_reason + "last slot allowed")
+                return
+
+            xform = orig_xform.copy()
+            # prefixed_hash2 = xform.compr_hash()
+
+            next_hashes = []
+            xform_results_len = {}
+            char_hits_per_len = {}
+
+            def inc_char_hit(len, char, freqs):
+                if len not in freqs:
+                    freqs[len] = {}
+
+                if char not in freqs[len]:
+                    freqs[len][char] = 0
+
+                freqs[len][char] += 1
+
+            all_results = []
+
+            for prefix in prefix_hashes:
+                for slot, c in enumerate(prefix[:main_slot]):
+                    if c == ' ':
+                        c = xform.default_replacement(slot)
+                    xform.set_slot(slot, c)
+
+                best_slot_ids = best_results(xform, main_slot, self.get_slot_candidates(xform, main_slot), try_func=self.try_one_freq)
+
+                if best_slot_ids:
+                    for id in best_slot_ids:
+                        length = best_slot_ids[id].length
+
+                        inc_char_hit(length, id, char_hits_per_len)
+
+                        def get_xform():
+                            xf = best_slot_ids[id].copy()
+                            xf.slot_replacement = (main_slot, id,)
+                            return xf
+
+                        xf = get_xform()
+
+                        all_results.append(xf.copy())
+
+                        if length not in xform_results_len:
+                            xform_results_len[length] = []
+
+                        xform_results_len[length].append(xf)
+
+            if not all_results:
+                return
+
+            next_hashes = []
+
+            best = min(char_hits_per_len)
+            # worst = max(char_hits_per_len)
+
+            sorted_lengths = sorted(char_hits_per_len)
+            # for length in sorted_lengths:
+            #     print(sorted(char_hits_per_len[length].values()))
+            #     print(length, char_hits_per_len[length])
+
+            for xform in all_results:
+                length = xform.length
+
+                def keep_xform(xform):
+                    discard_offset = 2
+                    if length in sorted_lengths[discard_offset:]:
+                        return False
+
+                    # min_hits = min(char_hits_per_len[length].values())
+                    max_hits = max(char_hits_per_len[length].values())
+                    hits_sorted = sorted(char_hits_per_len[length].values())
+                    median_hits = hits_sorted[int(len(hits_sorted) / 2)]
+
+                    slot, repl_id = xform.slot_replacement
+                    hits = char_hits_per_len[length][repl_id]
+
+                    if length in sorted_lengths[1:]:
+                        if hits != max_hits:
+                            return False
+                        return True
+
+                    assert length == best
+
+                    if hits == max_hits:
+                        return True
+
+                    # [TICKLE][TODO]
+                    # if hits < median_hits:
+                    if hits <= median_hits:
+                        return False
+
+                    return True
+
+                if not keep_xform(xform):
+                    continue
+
+                xf = xform.copy()
+                slot, id = xf.slot_replacement
+                xf.set_slot(slot, id)
+
+                next_hashes.append(xf.compr_hash()[:slot+1])
+
+            next_slot = main_slot + 1
+            new_xform = orig_xform.copy()
+
+            # Free upcoming slot(s) (they may have been set to a fixed value)
+            for slot in range(next_slot, next_slot + 1):
+                new_xform.free_slot(next_slot)
+
+            enter_maze(new_xform, next_slot, next_hashes)
+            note("Returning from maze (slot {})".format(next_slot))
+
+            return
+
+        xform = XForm(self)
+
+        if CONFIG_get('replace_ids_outside_of_search_range_with_match_hints'):
+            self.apply_best_hints_to_xform(Cat_Match, xform, self.id_depth)
+
+        start_slot = CONFIG_get('start_slot', 0)
+        enter_maze(xform, start_slot, None, new_game=True)
+        print()
+
+        log_deeper("--")
+        log_deeper("Search log")
+
+        num_best_found = 0
+        atb_length = self.best.length()
+        xforms = []
+        for k in self.compr_hashes:
+            xform = self.compr_hashes[k]
+            if xform.length == atb_length:
+                num_best_found += 1
+                xforms.append(xform.friendly_hash())
+
+        log_deeper("{}/{} iteration(s) with best length ({}b [{}])"
+                   .format(num_best_found, iter_count, atb_length,
+                           list_s(xforms[:10])))
+
+        for k in search_info:
+            log_deeper(k + ": " + str(search_info[k]))
+
+        if Info_Cache_Hits in search_info:
+            hits = search_info[Info_Cache_Hits]
+            accesses = search_info[Info_Cache_Accesses]
+            log_deeper("Cache hits {:.2f}% ({}/{})".format(
+                (hits * 100.0 / accesses), hits, accesses))
+
+        log_deeper("--")
 
         return self.best.data_out
 
-    def is_concat_compatible_replacement(self, ori_id, new_id):
-        concat_info = self.ids_concat_info[ori_id]
+    def is_concat_compatible_replacement_slot(self, slot, new_id):
+        concat_info = self.slots_concat_info[slot]
         first_new_id_char = new_id[0]
 
         if first_new_id_char in 'Xx':
@@ -860,7 +2010,7 @@ class Packer(src.lualexer.LuaLexer):
 
         concat_info = concat_info.replace(
             'd', '').replace('x', '').strip()
-        assert not concat_info, ori_id + ":" + concat_info
+        assert not concat_info, self.original_id_names[slot] + ":" + concat_info
 
         return True
 
@@ -879,9 +2029,13 @@ def pack(args):
     data = file.read()
     file.close()
 
-    global pedantic
+    global pedantic, zopfli_iter_count
     log_level = args.verbose
     pedantic = args.pedantic
+
+    zopfli_iter_count = -1
+    if args.extreme is not None and args.extreme >= 0:
+        zopfli_iter_count = args.extreme
 
     set_log_info(log_level, pedantic)
 

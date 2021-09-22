@@ -15,7 +15,7 @@ class ZopfliOptions(ctypes.Structure):
 compressor = None
 
 
-def zopfli_compress(bytes_in, use_extreme=False):
+def zopfli_compress(bytes_in, iter_count=-1):
     global compressor
 
     if not compressor:
@@ -66,8 +66,8 @@ def zopfli_compress(bytes_in, use_extreme=False):
     # options.verbose = 1
     # options.verbose_more = 1
 
-    if use_extreme:
-        options.num_iterations = 400
+    if iter_count != -1:
+        options.num_iterations = iter_count
         options.blocksplitting = 1
         options.blocksplittingmax = 0
     else:
