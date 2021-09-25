@@ -121,9 +121,11 @@ class LuaLexer(object):
                 c = s[i]
                 t += c
                 if c in 'xX':
-                    if prev == '0':
+                    if prev == '0' and length < 2:
+                        # 0 in front and only one digit -> hex
                         seen = 'x'
                     else:
+                        # No 0 in front or e.g. "10" -> id
                         reset = True
                 elif c.isdigit():
                     if seen == ' ':
