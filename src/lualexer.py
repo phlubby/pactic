@@ -380,12 +380,13 @@ class LuaLexer(object):
             set_id_prop(k, 'reserved')
             set_id_prop(k, 'keyword')
 
-        funcs = ('btn,btnp,circ,cirb,clip,cls,exit,fget,font,fset,'
+        funcs = ('BDR,btn,btnp,circ,circb,clip,cls,'
+                 'elli,ellib,exit,fget,font,fset,'
                  'key,keyp,line,load,'
-                 'map,memcpy,mget,mouse,mset,music,OVR,peek,peek4,'
+                 'map,memcpy,memset,mget,mouse,mset,music,OVR,peek,peek4,'
                  'pix,pmem,poke,poke4,print,rect,rectb,reset,'
                  'SCN,sfx,spr,sync,'
-                 'textri,TIC,time,trace,tri,tstamp'.split(','))
+                 'textri,TIC,time,trace,tri,trib,tstamp'.split(','))
 
         tic_classes = 'math,string,table'.split(',')
         for k in all_ids:
